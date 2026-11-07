@@ -1,29 +1,34 @@
 """
 VOZ - o pet lê em voz alta os post-its e os cartazes, com a emoção que ele sente na hora.
 
-Dois jeitos de falar, nesta ordem:
+Dois jeitos de falar:
     voz natural   OmniVoice, rodando no computador (instalada pelo menu Voz natural, em voz_natural/).
                   A voz de cada pet vem do áudio pets/<pet>/voz/referencia.wav: o modelo imita esse
                   áudio em todas as frases. A emoção entra como marca no texto (risada, suspiro...)
-                  e como velocidade. Cada fala gerada fica em cache (memory/voz/<pet>/): na segunda
-                  vez, toca na hora.
+                  e como velocidade.
     sistema       a voz do próprio sistema (`say` no macOS): quando a voz natural não está instalada,
-                  o pet não tem referência ou o motor falhou.
+                  o pet não tem referência ou a geração falhou.
 
-Nada trava o pet: o motor gera em outro processo, e só a fala mais recente toca (uma frase nova
-interrompe a anterior). Uma fala que fica pronta tarde demais não toca (mas fica no cache).
+A fala natural é gerada ANTES de o post-it aparecer, na fila do mind/preparo.py: o modelo carrega,
+gera o áudio e é descarregado. Só então o post-it aparece, junto com o áudio, e o arquivo é apagado
+assim que termina de tocar (ou quando alguém fecha o post-it). Nada fica guardado.
+
+    preparar(texto, emocao, rodar)   (thread do preparo) gera o áudio num arquivo temporário
+    anexar(texto, arquivo)           (tela) guarda o áudio pronto daquela frase
+    dizer(texto, emocao)             (tela) a frase apareceu: toca o áudio dela, ou a voz do sistema
+    recolher()                       (tela, a cada quadro) apaga o áudio que terminou de tocar
 """
 
-import hashlib
+
 import re
-import threading
 import time
 import unicodedata
+import uuid
 from pathlib import Path
 
 from .. import plataforma
 
-ATRASO_MAXIMO_S = 15.0      # s: a fala ficou pronta depois disso (modelo carregando, fila): não toca
+ESQUECIDO_S = 300.0         # s: áudio pronto que nenhum post-it usou (desligaram no meio): apagado
 SEED_PADRAO = 11
 
 # emoção do pet -> (marca no começo do texto, fator de velocidade). Marcas que o OmniVoice entende:
@@ -39,7 +44,22 @@ EMOCOES = {
     "assustado":  ("[surprise-ah] ", 1.25),
     "dramatico":  ("[sigh] ", 0.75),
     "dormindo":   ("", 0.85),
+    # cartazes da greve e da revolução (não são emoções do rosto): palavra de ordem, sem pressa
+    "grevista":   ("[dissatisfaction-hnn] ", 0.90),
+    "revoltado":  ("[dissatisfaction-hnn] ", 0.90),
 }
+
+# Quanto a fala sobe. O OmniVoice não tem "gritar" na clonagem: o que dá é exclamar (a entonação sobe),
+# aumentar o volume (o pico do áudio; o normal é VOLUME_PADRAO) e repetir a palavra de ordem: ele fala,
+# espera REPETIR_APOS_S e fala de novo (REPETICOES vezes), como numa passeata.
+VOLUME_PADRAO = 0.5
+INTENSIDADE = {
+    "bravo":     {"exclamar": True},
+    "grevista":  {"exclamar": True, "volume": 0.7, "repetir": True},
+    "revoltado": {"exclamar": True, "volume": 0.9, "repetir": True},
+}
+REPETIR_APOS_S = 0.5            # s de silêncio entre uma vez e a outra
+REPETICOES = 1                  # quantas vezes ele repete depois da primeira
 
 
 def para_fala(texto):
@@ -53,20 +73,49 @@ def para_fala(texto):
     return limpo if any(c.isalnum() for c in limpo) else ""
 
 
+def exclamar(texto):
+    """Termina em "!" (a entonação sobe); pergunta continua pergunta."""
+    texto = texto.rstrip(" .…;,")
+    return texto if texto.endswith(("!", "?")) else texto + "!"
+
+
 def com_emocao(texto, emocao, velocidade_base=1.0):
-    """(texto com a marca da emoção, velocidade) para o motor."""
+    """(texto com a marca da emoção, velocidade) para o motor. Bravo, greve e revolução exclamam."""
     marca, fator = EMOCOES.get(emocao, ("", 1.0))
+    if INTENSIDADE.get(emocao, {}).get("exclamar"):
+        texto = exclamar(texto)
     return marca + texto, round(velocidade_base * fator, 3)
 
 
-class Voz:
-    """Fala uma frase por vez: voz natural (com cache) quando dá, senão a voz do sistema."""
+def repete(emocao):
+    """Esta emoção é palavra de ordem: depois de falar, ele espera e fala de novo."""
+    return bool(INTENSIDADE.get(emocao, {}).get("repetir"))
 
-    def __init__(self, pasta_cache, motor=None, referencia=None, referencia_texto=None, ajustes=None,
+
+def volume_da_emocao(emocao):
+    """Pico do áudio final para esta emoção (a revolução sai mais alta)."""
+    return INTENSIDADE.get(emocao, {}).get("volume", VOLUME_PADRAO)
+
+
+def _apagar(caminho):
+    """Apaga o arquivo (e o .tmp que o trabalhador deixa enquanto escreve), sem reclamar se já sumiu."""
+    if caminho is None:
+        return
+    for arquivo in (Path(caminho), Path(str(caminho) + ".tmp")):
+        try:
+            arquivo.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+class Voz:
+    """Fala uma frase por vez: o áudio natural preparado antes, ou a voz do sistema na hora."""
+
+    def __init__(self, pasta, motor=None, referencia=None, referencia_texto=None, ajustes=None,
                  sistema=plataforma, relogio=time.monotonic):
-        """`ajustes` vem do pets/<pet>.json: {"sistema": "Eddy", "velocidade": 1.15, "seed": 11}."""
+        """`pasta` recebe os áudios enquanto existem; `ajustes` vem do pets/<pet>.json."""
         ajustes = ajustes or {}
-        self.pasta = Path(pasta_cache)
+        self.pasta = Path(pasta)
         self.motor = motor
         self.referencia = Path(referencia) if referencia else None
         self.referencia_texto = Path(referencia_texto) if referencia_texto else None
@@ -75,12 +124,14 @@ class Voz:
         self.seed = int(ajustes.get("seed", SEED_PADRAO))
         self.sistema = sistema                  # plataforma (trocável nos testes)
         self.relogio = relogio
-        self._trava = threading.Lock()
-        self._processo = None
-        self._atual = None                      # a última frase pedida (gerando ou tocando)
-        self._vez = 0                           # cada fala nova (ou parar) invalida as anteriores
-        self._marca_da_voz = None
-        self.ultimo_motor = None                # "natural", "cache" ou "sistema" (para o log e os testes)
+        self._anexados = {}                     # frase falada -> (arquivo, quando ficou pronto)
+        self._processo = None                   # o que está tocando
+        self._arquivo = None                    # o áudio que está tocando (apagado quando termina)
+        self._atual = None                      # a frase que está tocando (ou esperando para repetir)
+        self._repetir = None                    # palavra de ordem: {"faltam": n, "quando": hora da próxima}
+        # () -> (vezes, pausa em s) da palavra de ordem; o app liga nas Configurações (Voz)
+        self.repeticao = lambda: (REPETICOES, REPETIR_APOS_S)
+        self.ultimo_motor = None                # "natural" ou "sistema" (para o log e os testes)
 
     # ---------------- voz natural ----------------
 
@@ -93,94 +144,143 @@ class Voz:
         """Dá para usar a voz natural: instalada e com a referência do pet."""
         return self.motor is not None and self.motor.instalado() and self.tem_referencia()
 
-    def ligar(self):
-        """Abre o motor da voz natural (o modelo carrega em segundo plano). Sem ela, não faz nada."""
-        if self.natural():
-            self.motor.ligar()
+    def preparar(self, texto, emocao=None, rodar=None):
+        """
+        (Thread do preparo) Gera a fala natural desta frase num arquivo: o motor carrega o modelo,
+        gera e fecha. Devolve o arquivo, ou None se não deu (aí o pet usa a voz do sistema).
+        """
+        falado = para_fala(texto)
+        if not falado or not self.natural():
+            return None
+        fala, velocidade = com_emocao(falado, emocao, self.velocidade)
+        saida = self.pasta / f"fala-{uuid.uuid4().hex[:12]}.wav"
+        pedido = {"texto": fala, "velocidade": velocidade, "seed": self.seed,
+                  "volume": volume_da_emocao(emocao),
+                  "referencia": str(self.referencia),
+                  "referencia_texto": self.referencia_texto.read_text(encoding="utf-8").strip(),
+                  "saida": str(saida)}
+        try:
+            self.pasta.mkdir(parents=True, exist_ok=True)
+            resposta = self.motor.gerar(pedido, rodar=rodar)
+        except BaseException:
+            _apagar(saida)                      # cancelada no meio: nada de áudio pela metade
+            raise
+        if resposta.get("ok") and saida.exists():
+            return saida
+        _apagar(saida)
+        return None
 
-    def desligar(self):
-        """Cala e fecha o motor (libera a memória do modelo)."""
-        self.parar()
-        if self.motor is not None:
-            self.motor.desligar()
+    def anexar(self, texto, arquivo):
+        """(Tela) O áudio desta frase ficou pronto: toca quando ela aparecer."""
+        chave = para_fala(texto)
+        antigo = self._anexados.pop(chave, None)
+        if antigo is not None and antigo[0] != Path(arquivo):
+            _apagar(antigo[0])
+        if not chave:
+            _apagar(arquivo)
+            return
+        self._anexados[chave] = (Path(arquivo), self.relogio())
 
-    def _marca(self):
-        """Muda quando o áudio ou o texto da referência mudam: aí o cache antigo não vale mais."""
-        if self._marca_da_voz is None:
-            h = hashlib.sha1(self.referencia.read_bytes())
-            h.update(self.referencia_texto.read_bytes())
-            self._marca_da_voz = h.hexdigest()[:12]
-        return self._marca_da_voz
-
-    def arquivo(self, falado, velocidade):
-        """Onde fica (ou vai ficar) a fala gerada desta frase, nesta emoção, com esta voz."""
-        chave = f"{self._marca()}\n{falado}\n{velocidade}\n{self.seed}"
-        return self.pasta / f"{hashlib.sha1(chave.encode('utf-8')).hexdigest()[:20]}.wav"
+    def descartar(self, texto):
+        """O post-it desta frase não vai aparecer (ou apareceu sem falar): apaga o áudio dele."""
+        item = self._anexados.pop(para_fala(texto), None)
+        if item is not None:
+            _apagar(item[0])
 
     # ---------------- falar ----------------
 
     def dizer(self, texto, emocao=None):
-        """Fala a frase com a emoção (interrompe a anterior). Nunca espera o motor."""
+        """A frase apareceu: toca o áudio preparado dela (interrompe a anterior) ou usa a voz do sistema."""
         texto = para_fala(texto)
-        if not texto or not self.sistema.TEM_VOZ:
+        if not texto:
             return
-        with self._trava:
-            self._vez += 1
-            vez = self._vez
-            self._parar_processo()
-            self._atual = texto
-        if self.natural():
-            falado, velocidade = com_emocao(texto, emocao, self.velocidade)
-            try:
-                cache = self.arquivo(falado, velocidade)
-            except OSError:
-                cache = None
-            if cache is not None and cache.exists():
-                self._tocar(vez, "cache", texto, self.sistema.tocar_audio, cache)
+        anexado = self._anexados.pop(texto, None)
+        if not self.sistema.TEM_VOZ:
+            if anexado is not None:
+                _apagar(anexado[0])
+            return
+        self._parar_processo()
+        if anexado is not None and anexado[0].exists():
+            self._processo = self.sistema.tocar_audio(anexado[0])
+            self._arquivo, self._atual, self.ultimo_motor = anexado[0], texto, "natural"
+            if self._processo is None:              # não abriu o player: apaga e cai na voz do sistema
+                _apagar(anexado[0])
+                self._arquivo = None
+            else:
+                self._repetir = self._palavra_de_ordem(emocao)
                 return
-            if cache is not None and self.motor.rodando():
-                pedido = {"texto": falado, "velocidade": velocidade, "seed": self.seed,
-                          "referencia": str(self.referencia),
-                          "referencia_texto": self.referencia_texto.read_text(encoding="utf-8").strip(),
-                          "saida": str(cache)}
-                inicio = self.relogio()
-                if self.motor.pedir(pedido, lambda r: self._chegou(vez, texto, cache, inicio, r)):
-                    return
-        self._tocar(vez, "sistema", texto, self.sistema.falar, texto, self.voz_sistema)
+        self._processo = self.sistema.falar(texto, self.voz_sistema)
+        self._atual, self.ultimo_motor = texto, "sistema"
+        self._repetir = self._palavra_de_ordem(emocao)
 
-    def _chegou(self, vez, texto, cache, inicio, resposta):
-        """O motor respondeu (na thread dele): toca, se ainda é a hora; se falhou, usa a voz do sistema."""
-        if self.relogio() - inicio > ATRASO_MAXIMO_S:
-            return                                          # passou da hora (fica no cache para a próxima)
-        if resposta.get("ok") and cache.exists():
-            self._tocar(vez, "natural", texto, self.sistema.tocar_audio, cache)
-        else:
-            self._tocar(vez, "sistema", texto, self.sistema.falar, texto, self.voz_sistema)
+    def _palavra_de_ordem(self, emocao):
+        """Quantas repetições esta fala ainda tem (greve, revolução), ou None se não repete."""
+        vezes = int(self.repeticao()[0]) if repete(emocao) else 0
+        return {"faltam": vezes, "quando": None} if vezes > 0 else None
 
-    def _tocar(self, vez, motor, texto, comecar, *args):
-        """Começa a tocar, se esta ainda é a fala mais recente."""
-        with self._trava:
-            if vez != self._vez:
-                return                                      # outra frase (ou parar) chegou no meio
-            self._parar_processo()
-            self._processo = comecar(*args)
-            self.ultimo_motor = motor
+    def recolher(self, pode_repetir=True):
+        """
+        (Tela, a cada quadro) Apaga o áudio que terminou de tocar e o que ninguém usou. Na palavra de
+        ordem (greve, revolução), guarda o áudio, espera REPETIR_APOS_S e toca de novo; `pode_repetir`
+        falso (escondido, pausado, voz desligada) desiste da repetição.
+        """
+        agora = self.relogio()
+        if self._processo is not None and self._processo.poll() is not None:
+            self._processo = None
+            rep = self._repetir
+            if rep is not None and rep["faltam"] > 0 and pode_repetir:
+                rep["quando"] = agora + float(self.repeticao()[1])   # o áudio fica: vai tocar de novo
+            else:
+                self._esquecer_atual()
+        rep = self._repetir
+        if self._processo is None and rep is not None and rep["quando"] is not None:
+            if not pode_repetir:
+                self._esquecer_atual()
+            elif agora >= rep["quando"]:
+                rep["faltam"] -= 1
+                rep["quando"] = None
+                if self._arquivo is not None and self._arquivo.exists():
+                    self._processo = self.sistema.tocar_audio(self._arquivo)
+                else:
+                    self._processo = self.sistema.falar(self._atual, self.voz_sistema)
+                if self._processo is None:
+                    self._esquecer_atual()
+        for chave, (arquivo, quando) in list(self._anexados.items()):
+            if agora - quando > ESQUECIDO_S:
+                del self._anexados[chave]
+                _apagar(arquivo)
 
     def parar(self, texto=None):
-        """Cala a boca. Com `texto`, só se for essa a frase atual (fecharam o post-it dela): se ela
-        ainda estiver sendo gerada, não toca quando ficar pronta."""
-        with self._trava:
-            if texto is not None and para_fala(texto) != self._atual:
-                return
-            self._vez += 1
-            self._atual = None
-            self._parar_processo()
+        """Cala a boca. Com `texto`, só se for essa a frase que está tocando (fecharam o post-it dela)."""
+        if texto is not None and para_fala(texto) != self._atual:
+            return
+        self._parar_processo()
+
+    def desligar(self):
+        """Cala e apaga todos os áudios (fechar, pânico, voz desligada)."""
+        self._parar_processo()
+        for arquivo, _quando in self._anexados.values():
+            _apagar(arquivo)
+        self._anexados.clear()
+
+    def limpar_pasta(self):
+        """Ao abrir: apaga áudios que sobraram de uma vez em que o programa fechou no meio."""
+        if not self.pasta.is_dir():
+            return
+        for arquivo in list(self.pasta.glob("*.wav")) + list(self.pasta.glob("*.wav.tmp")):
+            _apagar(arquivo)
 
     def _parar_processo(self):
-        """Encerra o processo de fala atual (chamar com a trava)."""
+        """Encerra o que está tocando e apaga o áudio dele."""
         processo, self._processo = self._processo, None
         if processo is not None and processo.poll() is None:
             try:
                 processo.terminate()
             except OSError:
                 pass
+        self._esquecer_atual()
+
+    def _esquecer_atual(self):
+        """A frase acabou de vez: apaga o áudio dela e desiste de repetir."""
+        _apagar(self._arquivo)
+        self._arquivo, self._atual, self._repetir = None, None, None

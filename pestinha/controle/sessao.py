@@ -1,9 +1,9 @@
 """
 SESSÃO - o que vale para a sessão inteira: permissões, visibilidade, pausa, pânico,
-esconder, salvar, sair e apagar os dados.
+salvar, sair e apagar os dados.
 
 Política única: pausado, desligado (pânico) ou apagando os dados, nada de rede, sentidos ou
-decisões (`_congelado`). Escondido ou desligado, nada fica na tela (`update_visibility`).
+decisões (`_congelado`). Desligado ou coberto por tela cheia, nada fica na tela (`update_visibility`).
 Mixin de PestinhaApp: usa os atributos criados em PestinhaApp.__init__.
 """
 
@@ -11,7 +11,7 @@ from .. import log as log_module
 from ..log import log
 import time
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
-from .. import config, store
+from .. import config, plataforma, store
 from ..ui.ui import SettingsDialog
 
 
@@ -29,10 +29,12 @@ class SessaoMixin:
             self.timeline.close()      # grava o minuto em andamento e para
         self.prof = config.profile(self.perms)
         self.conditioning.rate = self.prof["cond_rate"]
-        if self.perms["voz"]:
-            self.voz.ligar()                         # abre o motor da voz natural (se instalada)
-        else:
-            self.voz.desligar()                      # cala e libera a memória do modelo
+        if not self.perms["voz"]:
+            self.voz.desligar()                      # cala e apaga os áudios prontos
+        if not self.perms["modo_teste"]:
+            self.paths.ultima_espiada.unlink(missing_ok=True)    # saiu do Modo teste: a cópia do print some
+        if new.get("ver_tela") and not plataforma.permissao_tela():
+            plataforma.pedir_permissao_tela()        # você ligou agora: o macOS pergunta (só uma vez)
         self._apply_settings()
 
     def _apply_settings(self):
@@ -45,30 +47,24 @@ class SessaoMixin:
         self.update_visibility()
 
     def _voz_natural_vai_mudar(self):
-        """Vão remover a voz natural pelo menu: fecha o motor antes, que está usando os arquivos."""
+        """Vão remover a voz natural pelo menu: para o que está sendo preparado, que usa os arquivos."""
+        self.preparo.cancelar()
         self.voz.desligar()
 
     def _voz_natural_mudou(self):
-        """Instalaram ou removeram a voz natural pelo menu: liga o motor se a voz estiver ligada."""
-        if self.perms["voz"]:
-            self.voz.ligar()
+        """Instalaram ou removeram a voz natural pelo menu: a próxima fala já usa (ou não) a voz natural."""
 
     def floats_allowed(self):
-        """Painéis sempre na tela: só no modo teste."""
-        return self.perms["modo_teste"] and self.floats_base()
+        """Painéis abertos sozinhos: só no modo teste, com "Abrir os painéis no modo teste" ligado."""
+        return self.perms["modo_teste"] and self.perms["paineis_teste"] and self.floats_base()
 
     def floats_base(self):
-        """Painéis abertos à mão: só some se o pet estiver desligado, escondido ou cobrido por tela cheia."""
-        return (self.perms["ativo"] and not self.hidden
-                and (not self.fullscreen or self.perms["tela_cheia"]))
+        """Painéis abertos à mão: só some se o pet estiver desligado ou coberto por tela cheia."""
+        return self.perms["ativo"] and (not self.fullscreen or self.perms["tela_cheia"])
 
     def update_visibility(self):
         """Decide se o pet aparece (ligado, não escondido, sem tela cheia, sem pânico) e mostra ou esconde tudo junto."""
-        visible = (
-            self.perms["ativo"]
-            and not self.hidden
-            and (not self.fullscreen or self.perms["tela_cheia"])
-        )
+        visible = self.perms["ativo"] and (not self.fullscreen or self.perms["tela_cheia"])
         if visible != self.pet.isVisible():
             self.pet.setVisible(visible)
             if not visible:
@@ -95,7 +91,7 @@ class SessaoMixin:
         self.ball.setVisible(bola_visivel)
         if not visible or not self.perms["fogos"]:
             self.festa.fogos.recolher()
-        self.tray.set_state(self.paused, self.hidden, self.perms["modo_teste"])
+        self.tray.set_state(self.paused, self.perms["modo_teste"])
 
     def open_settings(self):
         """Abre a tela de configurações (ou traz para frente se já estiver aberta)."""
@@ -106,6 +102,7 @@ class SessaoMixin:
             self.settings.history_wiped.connect(self.timeline.discard)
             self.settings.voz_natural_vai_mudar.connect(self._voz_natural_vai_mudar)
             self.settings.voz_natural_mudou.connect(self._voz_natural_mudou)
+            self.settings.testar_meme.connect(self.testar_meme)
             self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()      # veio do pet ou da bandeja: o programa pode nem estar ativo
@@ -139,16 +136,6 @@ class SessaoMixin:
             self._pausado_em = None
             self._ultimo_think = now                         # a retomada não cobra o tempo parado
 
-    def menu_close(self):
-        """Esconde o pet pelo menu (sem desligar)."""
-        self.hidden = True
-        self.update_visibility()
-
-    def toggle_hidden(self):
-        """Esconde ou mostra o pet."""
-        self.hidden = not self.hidden
-        self.update_visibility()
-
     def clear_things(self):
         """Tira as travessuras que estão na tela."""
         self.mischief_ctl.clear()
@@ -156,8 +143,8 @@ class SessaoMixin:
     def panic(self):
         """Desliga tudo e grava: só volta quando você religar na tela inicial."""
         self.store.panic()
+        self.preparo.cancelar()                      # mata a IA e a voz que estavam preparando
         self.voz.desligar()
-        self.frases_ia.cancelar()
         self._atualizar_parada()
         self.pet.cancel_interaction()
         self.clear_things()
@@ -174,7 +161,8 @@ class SessaoMixin:
     def wipe_all_data(self):
         """Apaga a pasta memory/ inteira e fecha. Nada é gravado depois disso, nem o log."""
         self.wiping = True
-        self.voz.desligar()                          # o motor escreve no log de memory/
+        self.preparo.cancelar()                      # o motor da voz escreve no log de memory/
+        self.voz.desligar()
         log_module.desligar_arquivo()
         falhas = store.apagar_pasta(self.paths.memory) if self.paths.memory.exists() else []
         if falhas or self.paths.memory.exists():
@@ -217,8 +205,8 @@ class SessaoMixin:
     def quit(self):
         """Salva tudo e fecha o programa; um erro no caminho nunca impede de fechar."""
         try:
+            self.preparo.cancelar()
             self.voz.desligar()
-            self.frases_ia.cancelar()
             self.save()
             self.mesa.fechar()
             self.festa.fechar()

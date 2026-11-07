@@ -1,26 +1,29 @@
 """
-MOTOR DA VOZ NATURAL - abre o trabalhador do OmniVoice (mind/omnivoice_trabalhador.py) e conversa com ele.
+MOTOR DA VOZ NATURAL - abre o trabalhador do OmniVoice (mind/omnivoice_trabalhador.py) para gerar UMA fala.
 
 O trabalhador roda com o Python de voz_natural/ambiente (onde estão o torch e o OmniVoice), num
 processo separado: o Pestinha não depende do torch e continua leve para quem não instalou a voz.
-A conversa é por linhas de JSON na entrada e na saída padrão (nenhuma porta de rede é aberta).
 
-    estado      "desligado" -> "carregando" -> "pronto"; "falhou" se o processo morrer sozinho
-    ligar()     abre o processo (o modelo leva alguns segundos para carregar; os pedidos esperam na fila)
-    pedir(p, f) manda um pedido; `f(resposta)` é chamada na thread de leitura quando ele responder
-    desligar()  fecha a entrada (o trabalhador sai sozinho) e, se demorar, encerra o processo
+Cada fala é um processo: ele abre, carrega o modelo, gera o áudio, responde e fecha. Assim o modelo
+(uns 3 GB) só ocupa memória enquanto a fala está sendo gerada, e nunca junto com a IA local
+(mind/preparo.py roda uma coisa por vez). A conversa é por linhas de JSON na entrada e na saída
+padrão (nenhuma porta de rede é aberta):
+
+    entrada   {"id": 1, "texto": ..., "velocidade": ..., "seed": ..., "referencia": ..., "saida": ...}
+    saída     {"evento": "pronto", "dispositivo": "mps", "segundos": 2.1}   (depois de carregar)
+              {"id": 1, "ok": true, ...}  ou  {"id": 1, "ok": false, "erro": "..."}
 """
 
-import itertools
 import json
+import os
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 from ..log import log
 
 TRABALHADOR = Path(__file__).with_name("omnivoice_trabalhador.py")
+TEMPO_MAXIMO_S = 180.0      # s: carregar (a 1ª vez compila para a GPU) + gerar, com novas tentativas
 
 
 def python_do_ambiente(pasta):
@@ -38,8 +41,17 @@ def instalada(pasta):
             and (pasta / "modelo" / "model.safetensors").exists())
 
 
+def _rodar_simples(cmd, entrada=None, tempo=TEMPO_MAXIMO_S, erros=subprocess.PIPE, ambiente=None):
+    """Sem o preparo (linha de comando, testes): roda e espera."""
+    try:
+        return subprocess.run(cmd, input=entrada, stdout=subprocess.PIPE, stderr=erros, timeout=tempo,
+                              env=ambiente, check=False)
+    except subprocess.TimeoutExpired as erro:
+        raise RuntimeError(f"passou de {tempo:.0f} s") from erro
+
+
 class MotorVoz:
-    """Processo do trabalhador do OmniVoice, com a fila de pedidos esperando resposta."""
+    """Gera falas com o OmniVoice, uma por processo."""
 
     def __init__(self, pasta, log_arquivo=None, python=None, trabalhador=TRABALHADOR):
         """`pasta` é voz_natural/; `log_arquivo` recebe o que o trabalhador escreve no stderr."""
@@ -47,113 +59,54 @@ class MotorVoz:
         self.log_arquivo = Path(log_arquivo) if log_arquivo else None
         self.python = Path(python) if python else None        # só os testes trocam
         self.trabalhador = Path(trabalhador)
-        self.estado = "desligado"
-        self.dispositivo = None
-        self._processo = None
-        self._pendentes = {}
-        self._ids = itertools.count(1)
-        self._trava = threading.Lock()
-        self._desligando = False
+        self.dispositivo = None                               # "mps", "cuda:0" ou "cpu" (da última fala)
+        self.carregou_s = None                                # quanto o modelo levou para carregar
 
     def instalado(self):
-        """Diz se dá para ligar (os testes, com `python` próprio, não precisam da instalação)."""
+        """Diz se dá para gerar (os testes, com `python` próprio, não precisam da instalação)."""
         return self.python is not None or instalada(self.pasta)
 
-    def rodando(self):
-        """Carregando ou pronto: aceita pedidos."""
-        return self.estado in ("carregando", "pronto")
-
-    def ligar(self):
-        """Abre o trabalhador, se a voz natural estiver instalada e ele ainda não estiver aberto."""
-        with self._trava:
-            if self.rodando() or not self.instalado():
-                return self.rodando()
-            python = self.python or python_do_ambiente(self.pasta)
-            erros = subprocess.DEVNULL
-            if self.log_arquivo is not None:
-                try:
-                    self.log_arquivo.parent.mkdir(parents=True, exist_ok=True)
-                    erros = open(self.log_arquivo, "a", encoding="utf-8")
-                except OSError:
-                    erros = subprocess.DEVNULL
+    def gerar(self, pedido, rodar=None, tempo=TEMPO_MAXIMO_S):
+        """
+        Abre o trabalhador, que carrega o modelo, gera esta fala em pedido["saida"] e fecha.
+        Devolve a resposta dele ({"ok": True, ...} ou {"ok": False, "erro": ...}). Nunca levanta,
+        a não ser a Cancelada do preparo (`rodar` é o Controle.rodar dele).
+        """
+        if not self.instalado():
+            return {"ok": False, "erro": "a voz natural não está instalada"}
+        python = self.python or python_do_ambiente(self.pasta)
+        cmd = [str(python), "-u", str(self.trabalhador), "--modelo", str(self.pasta / "modelo")]
+        entrada = (json.dumps(dict(pedido, id=1), ensure_ascii=False) + "\n").encode("utf-8")
+        ambiente = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
+        erros = subprocess.DEVNULL
+        if self.log_arquivo is not None:
             try:
-                self._processo = subprocess.Popen(
-                    [str(python), "-u", str(self.trabalhador), "--modelo", str(self.pasta / "modelo")],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=erros,
-                    text=True, encoding="utf-8", bufsize=1)
-            except OSError as erro:
-                log(f"[voz] não abriu o motor da voz natural: {erro}")
-                self.estado = "falhou"
-                return False
-            finally:
-                if erros is not subprocess.DEVNULL:
-                    erros.close()                          # o processo filho já tem a cópia dele
-            self._desligando = False
-            self.estado = "carregando"
-            threading.Thread(target=self._ler, args=(self._processo,), name="voz-motor", daemon=True).start()
-            log("[voz] motor da voz natural carregando")
-            return True
-
-    def pedir(self, pedido, ao_terminar):
-        """Manda um pedido ao trabalhador. Devolve False se ele não estiver rodando."""
-        with self._trava:
-            if not self.rodando() or self._processo is None:
-                return False
-            ident = next(self._ids)
-            self._pendentes[ident] = ao_terminar
-            try:
-                self._processo.stdin.write(json.dumps(dict(pedido, id=ident), ensure_ascii=False) + "\n")
-                self._processo.stdin.flush()
-            except (OSError, ValueError):
-                self._pendentes.pop(ident, None)
-                return False
-            return True
-
-    def desligar(self, espera=3.0):
-        """Fecha o trabalhador (libera a memória do modelo). Pedidos pendentes recebem ok=False."""
-        with self._trava:
-            processo, self._processo = self._processo, None
-            self._desligando = True
-            self.estado = "desligado"
-        if processo is None:
-            return
+                self.log_arquivo.parent.mkdir(parents=True, exist_ok=True)
+                erros = open(self.log_arquivo, "ab")
+            except OSError:
+                erros = subprocess.DEVNULL
         try:
-            processo.stdin.close()                         # fim da entrada: ele sai do laço e termina
-        except (OSError, ValueError):
-            pass
-        try:
-            processo.wait(timeout=espera)
-        except subprocess.TimeoutExpired:
-            processo.terminate()
+            r = (rodar or _rodar_simples)(cmd, entrada=entrada, tempo=tempo, erros=erros, ambiente=ambiente)
+        except (OSError, RuntimeError) as erro:
+            log(f"[voz] o motor da voz natural não gerou: {erro}")
+            return {"ok": False, "erro": str(erro)}
+        finally:
+            if erros is not subprocess.DEVNULL:
+                erros.close()
+        resposta = None
+        for linha in (r.stdout or b"").decode("utf-8", errors="replace").splitlines():
             try:
-                processo.wait(timeout=espera)
-            except subprocess.TimeoutExpired:
-                processo.kill()
-
-    def _ler(self, processo):
-        """Thread: lê as respostas do trabalhador e chama quem pediu."""
-        for linha in processo.stdout:
-            try:
-                resposta = json.loads(linha)
+                msg = json.loads(linha)
             except ValueError:
                 continue
-            if resposta.get("evento") == "pronto":
-                with self._trava:
-                    if self._processo is processo:
-                        self.estado = "pronto"
-                        self.dispositivo = resposta.get("dispositivo")
-                log(f"[voz] voz natural pronta ({resposta.get('dispositivo')}, {resposta.get('segundos')} s)")
+            if not isinstance(msg, dict):
                 continue
-            with self._trava:
-                ao_terminar = self._pendentes.pop(resposta.get("id"), None)
-            if ao_terminar is not None:
-                ao_terminar(resposta)
-        with self._trava:                                  # o processo terminou
-            pendentes, self._pendentes = self._pendentes, {}
-            if self._processo is processo:
-                self._processo = None
-                self.estado = "desligado" if self._desligando else "falhou"
-        if not self._desligando:
-            log("[voz] o motor da voz natural fechou sozinho (veja memory/logs/voz_natural.log)")
-        for ao_terminar in pendentes.values():
-            ao_terminar({"ok": False, "erro": "o motor fechou"})
+            if msg.get("evento") == "pronto":
+                self.dispositivo, self.carregou_s = msg.get("dispositivo"), msg.get("segundos")
+            elif msg.get("id") == 1:
+                resposta = msg
+        if resposta is None:
+            erro = f"o motor saiu com o código {r.returncode} sem responder (veja memory/logs/voz_natural.log)"
+            log(f"[voz] {erro}")
+            return {"ok": False, "erro": erro}
+        return resposta

@@ -1,15 +1,16 @@
 """
 IA LOCAL (em teste) - um modelo de linguagem pequeno rodando no computador, com o llama.cpp.
 
-Por enquanto ele faz uma coisa só: escreve um post-it sobre o que o pet sente agora. Quem sente é a
-rede neural; o modelo só põe isso em palavras (mind/frases_ia.py monta o pedido).
+Ele faz duas coisas, e quem decide quando é a rede neural (mind/frases_ia.py monta os pedidos):
+    escrever    um post-it sobre o que o pet sente agora (llama-completion)
+    ver         olhar um print da tela e escrever um comentário (llama-mtmd-cli: o Qwen3.5 enxerga)
 
 Nada é instalado no sistema nem no Python. O instalador baixa para ia_local/, ao lado do programa:
     llama/      o programa pronto do llama.cpp, publicado pelo próprio projeto (13 a 25 MB, conforme o sistema)
-    modelo/     o Qwen3.5-2B compactado (GGUF, 1,3 GB)
-Os dois têm versão fixa e só são usados se a sha256 bater com a anotada aqui.
+    modelo/     o Qwen3.5-2B compactado (GGUF, 1,3 GB) e a parte dele que enxerga (mmproj, 0,7 GB)
+Tudo tem versão fixa e só é usado se a sha256 bater com a anotada aqui.
 
-Cada frase abre o llama.cpp, que carrega o modelo, escreve e fecha: a memória volta na hora.
+Cada pedido abre o llama.cpp, que carrega o modelo, responde e fecha: a memória volta na hora.
 
     python -m pestinha.mind.ia_local                # diz se está instalada
     python -m pestinha.mind.ia_local --instalar     # baixa, confere e testa
@@ -51,8 +52,21 @@ MODELO_ARQUIVO = "Qwen3.5-2B-Q4_K_M.gguf"
 MODELO_SHA256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 MODELO_BYTES = 1280835840
 MODELO_URL = f"https://huggingface.co/{MODELO_REPO}/resolve/{MODELO_REVISAO}/{MODELO_ARQUIVO}"
+# a parte do modelo que lê imagens (projetor multimodal), do mesmo repositório e da mesma revisão
+VISAO_ARQUIVO = "mmproj-F16.gguf"
+VISAO_SHA256 = "7035e9cb8d7c6a9681d07eef9a364783e86ea4cd73faab2eabb4f43a101830c7"
+VISAO_BYTES = 668227264
+VISAO_URL = f"https://huggingface.co/{MODELO_REPO}/resolve/{MODELO_REVISAO}/{VISAO_ARQUIVO}"
 
 PROGRAMA = "llama-completion"         # gera uma vez e termina (o llama-cli é o de conversa)
+PROGRAMA_VISAO = "llama-mtmd-cli"     # o mesmo, com imagem
+IMAGEM_TOKENS = 256                   # no máximo isso por imagem: o print vira menos tokens e sai mais rápido
+# A conversa no formato do Qwen com o pensamento vazio, para o llama-mtmd-cli (que aplica o modelo de
+# conversa sozinho). O dele, que vem no modelo, deixa o Qwen3.5 pensar em inglês antes de responder.
+TEMPLATE_SEM_PENSAR = (
+    "{%- for message in messages -%}<|im_start|>{{ message.role }}\n{{ message.content }}<|im_end|>\n"
+    "{% endfor -%}{%- if add_generation_prompt -%}<|im_start|>assistant\n<think>\n\n</think>\n\n{% endif -%}"
+)
 TEMPO_MAXIMO_S = 60.0                 # s: passou disso, a geração é cancelada
 CONTEXTO = 2048                       # tokens: o pedido é curto, e contexto pequeno carrega mais rápido
 AGENTE = "Pestinha (instalador da IA local)"
@@ -73,12 +87,12 @@ def pacote(sistema=None, maquina=None):
     return PACOTES.get((sistema, maquina))
 
 
-def programa(pasta):
-    """O llama-completion dentro de ia_local/llama/ (o pacote de cada sistema arruma as pastas de um jeito)."""
+def programa(pasta, nome=PROGRAMA):
+    """Um programa do llama.cpp dentro de ia_local/llama/ (o pacote de cada sistema arruma as pastas de um jeito)."""
     base = Path(pasta) / "llama"
     if not base.is_dir():
         return None
-    for nome in (PROGRAMA, PROGRAMA + ".exe"):
+    for nome in (nome, nome + ".exe"):
         for achado in sorted(base.rglob(nome)):
             if achado.is_file():
                 return achado
@@ -90,10 +104,20 @@ def modelo(pasta):
     return Path(pasta) / "modelo" / MODELO_ARQUIVO
 
 
+def visao(pasta):
+    """O arquivo da parte do modelo que enxerga (mmproj)."""
+    return Path(pasta) / "modelo" / VISAO_ARQUIVO
+
+
 def instalada(pasta):
     """Instalada e completa (o instalador grava instalado.json só depois do teste)."""
     pasta = Path(pasta)
     return (pasta / "instalado.json").exists() and programa(pasta) is not None and modelo(pasta).exists()
+
+
+def visao_instalada(pasta):
+    """Instalada e enxergando: o modelo, a parte da visão e o programa que lê imagens."""
+    return instalada(pasta) and visao(pasta).exists() and programa(pasta, PROGRAMA_VISAO) is not None
 
 
 # ---------------- gerar ----------------
@@ -125,6 +149,27 @@ def comando(pasta, prompt, tokens=40, temperatura=0.8, seed=-1, programa_=None):
     ]
 
 
+def comando_visao(pasta, sistema, pedido, imagem, tokens=40, temperatura=0.7, seed=-1, programa_=None):
+    """A linha de comando de uma olhada: carrega o modelo e a visão, lê a `imagem`, responde e termina."""
+    exe = list(programa_) if isinstance(programa_, (list, tuple)) else [
+        str(programa_ or programa(pasta, PROGRAMA_VISAO))]
+    return exe + [
+        "-m", str(modelo(pasta)),
+        "--mmproj", str(visao(pasta)),
+        "--image", str(imagem),
+        "--image-max-tokens", str(IMAGEM_TOKENS),
+        "--jinja", "--chat-template", TEMPLATE_SEM_PENSAR,
+        "-sys", sistema,
+        "-p", pedido,
+        "-n", str(tokens),
+        "-c", str(CONTEXTO),
+        "--temp", str(temperatura),
+        "-s", str(seed),
+        "-lv", "0",
+        "--offline",
+    ]
+
+
 def resposta(saida):
     """O texto que o modelo escreveu, sem as marcas do llama.cpp e do Qwen."""
     texto = saida.decode("utf-8", errors="replace") if isinstance(saida, bytes) else str(saida)
@@ -137,19 +182,35 @@ def resposta(saida):
     return texto.strip()
 
 
-def gerar(pasta, prompt, tempo=TEMPO_MAXIMO_S, **kw):
-    """Gera e devolve a resposta (veja `resposta`). Levanta RuntimeError se não der."""
-    cmd = comando(pasta, prompt, **kw)
+def rodar_simples(cmd, entrada=None, tempo=TEMPO_MAXIMO_S, erros=subprocess.PIPE, ambiente=None):
+    """Roda e espera (quem roda pelo mind/preparo.py usa o dele, que dá para cancelar)."""
     try:
-        r = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=tempo, check=False)
+        return subprocess.run(cmd, input=entrada, stdin=None if entrada is not None else subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=erros, timeout=tempo, env=ambiente, check=False)
     except subprocess.TimeoutExpired as erro:
         raise RuntimeError(f"passou de {tempo:.0f} s") from erro
+
+
+def _executar(cmd, tempo, rodar):
+    """Roda o llama.cpp e devolve a resposta limpa. Levanta RuntimeError se não der."""
+    try:
+        r = (rodar or rodar_simples)(cmd, tempo=tempo)
     except OSError as erro:
         raise RuntimeError(f"não abriu o llama.cpp: {erro}") from erro
     if r.returncode != 0:
-        erro = r.stderr.decode("utf-8", errors="replace").strip().splitlines()[-1:] or ["?"]
+        erro = (r.stderr or b"").decode("utf-8", errors="replace").strip().splitlines()[-1:] or ["?"]
         raise RuntimeError(f"o llama.cpp saiu com o código {r.returncode}: {erro[0][:200]}")
     return resposta(r.stdout)
+
+
+def gerar(pasta, prompt, tempo=TEMPO_MAXIMO_S, rodar=None, **kw):
+    """Gera e devolve a resposta (veja `resposta`). Levanta RuntimeError se não der."""
+    return _executar(comando(pasta, prompt, **kw), tempo, rodar)
+
+
+def ver(pasta, sistema, pedido, imagem, tempo=TEMPO_MAXIMO_S, rodar=None, **kw):
+    """Olha a imagem e devolve o que o modelo escreveu. Levanta RuntimeError se não der."""
+    return _executar(comando_visao(pasta, sistema, pedido, imagem, **kw), tempo, rodar)
 
 
 # ---------------- instalar ----------------
@@ -234,8 +295,8 @@ def instalar(pasta, escrever=print, baixar_=baixar, teste_=teste, sistema=None, 
     arquivo, sha = escolhido
     inicio = time.monotonic()
     try:
-        escrever(f"[1/3] llama.cpp {LLAMA_VERSAO} ({arquivo})")
-        if programa(pasta) is not None:
+        escrever(f"[1/4] llama.cpp {LLAMA_VERSAO} ({arquivo})")
+        if programa(pasta) is not None and programa(pasta, PROGRAMA_VISAO) is not None:
             escrever("    já está aqui")
         else:
             baixado = baixar_(LLAMA_URL.format(versao=LLAMA_VERSAO, arquivo=arquivo),
@@ -243,14 +304,20 @@ def instalar(pasta, escrever=print, baixar_=baixar, teste_=teste, sistema=None, 
             shutil.rmtree(pasta / "llama", ignore_errors=True)
             extrair(baixado, pasta / "llama")
             baixado.unlink()
-            if programa(pasta) is None:
-                raise RuntimeError(f"o pacote não trouxe o {PROGRAMA}")
-        escrever(f"[2/3] Modelo {MODELO_ARQUIVO} (uns {gb(MODELO_BYTES / 1e9)}, do Hugging Face)")
+            for nome in (PROGRAMA, PROGRAMA_VISAO):
+                if programa(pasta, nome) is None:
+                    raise RuntimeError(f"o pacote não trouxe o {nome}")
+        escrever(f"[2/4] Modelo {MODELO_ARQUIVO} (uns {gb(MODELO_BYTES / 1e9)}, do Hugging Face)")
         if modelo(pasta).exists() and modelo(pasta).stat().st_size == MODELO_BYTES:
             escrever("    já está aqui")
         else:
             baixar_(MODELO_URL, modelo(pasta), MODELO_SHA256, escrever, MODELO_BYTES)
-        escrever("[3/3] Teste: carregando o modelo e gerando uma resposta")
+        escrever(f"[3/4] Visão: {VISAO_ARQUIVO} (uns {gb(VISAO_BYTES / 1e9)}, a parte do modelo que enxerga)")
+        if visao(pasta).exists() and visao(pasta).stat().st_size == VISAO_BYTES:
+            escrever("    já está aqui")
+        else:
+            baixar_(VISAO_URL, visao(pasta), VISAO_SHA256, escrever, VISAO_BYTES)
+        escrever("[4/4] Teste: carregando o modelo e gerando uma resposta")
         ok, segundos, texto = teste_(pasta)
         if not ok:
             raise RuntimeError(f"o teste não respondeu: {texto}")
@@ -261,7 +328,7 @@ def instalar(pasta, escrever=print, baixar_=baixar, teste_=teste, sistema=None, 
         return False
     (pasta / "instalado.json").write_text(json.dumps({
         "llama": LLAMA_VERSAO, "pacote": arquivo, "modelo": f"{MODELO_REPO}/{MODELO_ARQUIVO}",
-        "revisao": MODELO_REVISAO, "teste_s": round(segundos, 1),
+        "visao": VISAO_ARQUIVO, "revisao": MODELO_REVISAO, "teste_s": round(segundos, 1),
         "instalado_em": time.strftime("%Y-%m-%d %H:%M:%S"),
     }, indent=1), encoding="utf-8")
     escrever(f"Pronto! A IA local está instalada em {pasta} ({(time.monotonic() - inicio) / 60:.1f} min).")
@@ -284,7 +351,8 @@ def main(argv=None):
         return 0
     if "--instalar" in argv:
         return 0 if instalar(pasta) else 1
-    print(f"IA local {'instalada' if instalada(pasta) else 'não instalada'} em {pasta}")
+    estado = "instalada, com visão" if visao_instalada(pasta) else "instalada" if instalada(pasta) else "não instalada"
+    print(f"IA local {estado} em {pasta}")
     print("Para instalar: python -m pestinha.mind.ia_local --instalar")
     return 0
 

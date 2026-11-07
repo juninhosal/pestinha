@@ -51,6 +51,19 @@ DEFAULT_PERMISSIONS = {
     "bolinha": True,           # a bolinha para ele brincar
     "fogos": True,             # fogo de artifício quando ele fica feliz de verdade (rede)
     "voz": False,              # lê os post-its e cartazes em voz alta (só macOS, por enquanto)
+    "inventar": True,          # a rede pode pedir uma frase nova à IA local (se instalada)
+    "ver_tela": False,         # a rede pode espiar a tela e comentar (IA local com visão); tira print
+    "inicio_notebook": True,   # ao abrir, o notebook já está na tela (desligado: aparece pelo menu)
+    "inicio_bolinha": True,    # ao abrir, a bolinha já está na tela (desligado: começa guardada)
+    "paineis_teste": False,    # no modo teste, o monitor neural e o painel de protesto abrem sozinhos
+    "repetir_vezes": 1,        # greve e revolução: quantas vezes ele repete a fala do cartaz (0: não repete)
+    "repetir_pausa_ms": 500,   # greve e revolução: milissegundos de silêncio antes de cada repetição
+}
+
+# Ajustes com número (não são liga/desliga): (mínimo, máximo). Fora disso, o valor é trazido para dentro.
+LIMITES_NUMERICOS = {
+    "repetir_vezes": (0, 5),
+    "repetir_pausa_ms": (0, 10000),
 }
 
 # (chave, rótulo, descrição) na ordem da tela inicial
@@ -66,6 +79,15 @@ PERMISSION_GROUPS = [
          "Ele lê em voz alta os post-its e os cartazes, com a emoção que está sentindo. Com a voz natural "
          "instalada, fala com a voz dele; sem ela, com a voz do sistema. Só no macOS, por enquanto. "
          "Fica calado escondido, pausado ou em tela cheia."),
+    ]),
+    ("IA local (em teste)", [
+        ("inventar", "Inventar frases novas",
+         "Quando a vontade de inventar está alta (a rede decide), o post-it traz uma frase nova escrita pela "
+         "IA local, em vez de uma de recadinhos.txt. Precisa da IA local instalada."),
+        ("ver_tela", "Espiar a tela e comentar",
+         "Quando está curioso (a rede decide, no máximo a cada 10 minutos), ele tira um print da tela e escreve "
+         "um post-it sobre o que você está fazendo. O print vai só para a IA local, neste computador, e é "
+         "apagado logo depois: nunca é salvo nem enviado. No macOS, pede a permissão de Gravação de Tela."),
     ]),
     ("Interação", [
         ("cutucar", "Cutucar", "Clicar nele é uma cutucada, e ele reage."),
@@ -88,17 +110,40 @@ PERMISSION_GROUPS = [
         ("fogos", "Fogos de artifício", "Quando ele fica muito feliz, a alegria da rede pode soltar um fogo."),
         ("bolinha", "Bolinha", "Uma bolinha para ele brincar. Se você levar para longe, ele reage (pode ficar triste, bravo ou ir atrás)."),
     ]),
+    ("Ao abrir", [
+        ("inicio_notebook", "Começar com o notebook na tela",
+         "Desligado, ele abre sem o notebook (e não senta para trabalhar): mostre pelo menu, em Mostrar o notebook."),
+        ("inicio_bolinha", "Começar com a bolinha na tela",
+         "Desligado, a bolinha começa guardada: jogue pelo menu, em Jogar a bolinha perto dele."),
+    ]),
     ("Teste", [
         ("modo_teste", "Modo teste", "Tempos curtos: travessuras e emoções acontecem em segundos."),
         ("mostrar_emocao", "Mostrar nome da emoção", "Texto pequeno embaixo dele (só no modo teste)."),
+        ("paineis_teste", "Abrir os painéis no modo teste",
+         "Monitor neural e painel de protesto abertos desde o começo. Desligado (o padrão), eles só abrem "
+         "pelo menu do pet ou pela bandeja."),
     ]),
 ]
 
 
 def permissoes_validas(novo):
-    """Mantém só as chaves conhecidas e com o mesmo tipo do padrão."""
-    return {k: v for k, v in novo.items()
-            if k in DEFAULT_PERMISSIONS and type(v) is type(DEFAULT_PERMISSIONS[k])}
+    """Mantém só as chaves conhecidas e com o mesmo tipo do padrão; os números ficam dentro dos limites."""
+    validas = {}
+    for k, v in novo.items():
+        if k not in DEFAULT_PERMISSIONS:
+            continue
+        padrao = DEFAULT_PERMISSIONS[k]
+        if isinstance(padrao, float) and type(v) is int:
+            v = float(v)                                   # 2 no arquivo vale como 2.0
+        if type(v) is not type(padrao):
+            continue
+        if k in LIMITES_NUMERICOS:
+            minimo, maximo = LIMITES_NUMERICOS[k]
+            if v != v:                                     # NaN
+                continue
+            v = min(max(v, minimo), maximo)
+        validas[k] = v
+    return validas
 
 
 def load_permissions(paths):
@@ -106,6 +151,9 @@ def load_permissions(paths):
     perms = dict(DEFAULT_PERMISSIONS)
     saved = read_json(paths.permissions, default=None)
     if isinstance(saved, dict):
+        antiga = saved.get("repetir_pausa")                   # versão em segundos: vira milissegundos
+        if "repetir_pausa_ms" not in saved and type(antiga) in (int, float):
+            saved = dict(saved, repetir_pausa_ms=int(round(antiga * 1000)))
         perms.update(permissoes_validas(saved))
     return perms
 

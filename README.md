@@ -11,7 +11,7 @@ Pets de tela para Windows, macOS e Linux, cada um com o próprio cérebro. São 
   cobra nem pede nada de ninguém.
 
 Os dois têm a mesma rede neural, mas cada um tem seu temperamento, seu conteúdo e sua memória, separados.
-Quem decide o que o pet sente e faz é uma **rede neural pulsada** de 470 neurônios (integração e disparo com
+Quem decide o que o pet sente e faz é uma **rede neural pulsada** de 490 neurônios (integração e disparo com
 vazamento), alimentada pelo que acontece no seu computador e pelo que você faz com ele. Algumas regras
 do programa (limiares, o que pode ou não acontecer) são escritas à mão; a seção
 [Como a decisão funciona](docs/ARQUITETURA.md#como-a-decisão-funciona) explica o que é aprendido e o que é regra.
@@ -80,6 +80,10 @@ python main.py --configurar
 Com o programa aberto, as opções também ficam em **Configurações**, no ícone da bandeja. No Windows, é lá que
 se marca **Abrir o Pestinha ao entrar no Windows**. Só uma cópia abre por vez.
 
+No grupo **Ao abrir**, você escolhe se ele começa com o notebook e com a bolinha na tela (**Começar com o notebook
+na tela**, **Começar com a bolinha na tela**; os dois vêm ligados). Desligados, eles aparecem pelo menu do pet,
+em **Mostrar o notebook** e **Jogar a bolinha perto dele**. Vale na próxima vez que abrir.
+
 ### Como interagir
 
 | Gesto | Efeito |
@@ -88,7 +92,7 @@ se marca **Abrir o Pestinha ao entrar no Windows**. Só uma cópia abre por vez.
 | Passar o mouse de um lado para o outro em cima dele | Carinho |
 | Segurar e arrastar / soltar rápido | Leva junto / arremessa |
 | Rodinha do mouse | Gira |
-| Botão direito | Menu: cutucar, carinho, bolinha, dormir, travessura, trabalhar, notebook, cantinho do castigo, painéis, configurações, esconder, fechar |
+| Botão direito | Menu: cutucar, carinho, bolinha, dormir, travessura, trabalhar, notebook, cantinho do castigo, painéis, configurações, sair |
 
 ### Pânico
 
@@ -98,8 +102,16 @@ Configurações.
 ### Modo teste
 
 Desligado por padrão. Ligado, os tempos ficam curtos (emoções, travessuras e protesto acontecem em
-segundos), os painéis de desenvolvimento ficam na tela (monitor neural e painel de protesto) e o
-terminal mostra as decisões.
+segundos) e o terminal mostra as decisões. Os painéis de desenvolvimento (monitor neural e painel de protesto)
+abrem pelo menu do pet ou pela bandeja; para eles abrirem sozinhos junto com o pet, ligue **Abrir os painéis no
+modo teste** (grupo **Teste**; vem desligado). Abertos sozinhos, também dá para fechar pelo menu. Com **Espiar a tela** ligado, o último print que a IA olhou fica em
+`memory/logs/ultima_espiada.png`, para você conferir se a captura deu certo (no menu do pet: **Ver o último
+print (teste)**). Ele é substituído a cada espiada e apagado quando o Modo teste é desligado.
+
+Só a cena fica na frente de tudo: o pet, a bolinha, o notebook, os fogos, os post-its, memes e cartazes e a
+plaquinha do castigo. O monitor neural e o painel de protesto são janelas normais: quando você usa outro
+programa, ele fica por cima deles. Para trazer um de volta, escolha o painel no menu do pet (ou na bandeja);
+para fechar, **Fechar o monitor neural** (ou **Fechar o painel de protesto**), no mesmo menu.
 
 ## Voz
 
@@ -124,14 +136,14 @@ seu computador e imita uma voz a partir de um áudio curto. Para instalar:
    |---|---|---|
    | Sistema | macOS 13 ou mais novo | No Windows e no Linux, a voz ainda não funciona |
    | Processador | Apple Silicon (M1 ou mais novo) | O modelo roda na GPU do Mac. O PyTorch atual não tem versão para Mac Intel |
-   | Memória | 8 GB de RAM (com menos de 16 GB, ele avisa) | O modelo ocupa uns 3 GB enquanto a voz está ligada |
+   | Memória | 8 GB de RAM (com menos de 16 GB, ele avisa) | O modelo ocupa uns 3 GB enquanto gera cada fala |
    | Espaço em disco | 6 GB livres | Baixa uns 4,5 GB |
    | Python | Rodando pelo código, Python 3.9 a 3.13 | O executável empacotado ainda não instala a voz natural |
 
 3. Se estiver tudo certo, clique em **Baixar e instalar**. O andamento aparece na própria tela. Ele baixa as
    bibliotecas (PyTorch e OmniVoice, uns 1,2 GB, do PyPI) e o modelo (uns 3,3 GB, do Hugging Face) e, no fim,
    gera uma frase de teste. Se a internet cair, clique de novo: ele continua de onde parou.
-4. Ligue **Falar os bilhetes e cartazes**. Na primeira fala, o modelo leva uns segundos para carregar.
+4. Ligue **Falar os bilhetes e cartazes**.
 
 Tudo fica na pasta `voz_natural/`, ao lado do programa, num ambiente Python separado. O Pestinha em si
 não passa a depender do PyTorch. Depois de instalado, nada mais é baixado: o modelo roda sem internet.
@@ -147,7 +159,16 @@ python -m pestinha.mind.voz_instalacao --remover    # apaga voz_natural/
 ```
 
 **Como a emoção entra na fala.** Na hora em que o post-it aparece, a emoção do pet vira uma marca no começo
-da frase e muda a velocidade. Os cartazes de protesto saem sempre bravos, e os de abandono, tristes.
+da frase e muda a velocidade. Os cartazes de protesto saem bravos (com exclamação), e os de abandono, tristes.
+Na **greve** e na **revolução**, o cartaz vira palavra de ordem: ele fala uma vez, sem pressa e mais alto, espera
+meio segundo e fala de novo ("minha bolinha agora é um nft!" ... "minha bolinha agora é um nft!"). Quantas vezes
+ele repete (0 a 5; 0 é não repetir) e a pausa antes de cada repetição (0 a 10.000 ms; o padrão é 500 ms) ficam
+em Configurações, no grupo **Voz**: **Palavra de ordem (greve e revolução)**. A pausa conta depois que a fala
+termina; cada áudio já tem um respiro de 0,1 s no começo e no fim, então mesmo 0 ms não emenda as palavras. Se o cartaz sair
+antes (você fechou, o estágio mudou, ele saiu da tela ou foi pausado), ele não repete. O OmniVoice não tem um jeito de
+"gritar" com a voz clonada; o volume, a exclamação e a repetição é que dão a força. No **cantinho do castigo**, ele
+fala o cartaz fazendo drama (ou bravo, quando está com raiva); o xingamento é censurado: os símbolos viram "piii"
+e o xingamento que é só símbolo vira um resmungo, da seção `[resmungo]` do `cartazes.txt`.
 
 | Emoção | Na fala | Velocidade |
 |---|---|---|
@@ -158,10 +179,29 @@ da frase e muda a velocidade. Os cartazes de protesto saem sempre bravos, e os d
 | triste | suspiro | mais devagar |
 | assustado | susto | bem mais rápida |
 | dramático | suspiro | bem mais devagar |
+| cartaz da greve | resmungo, exclamação, volume mais alto, repete (1 vez, depois de 0,5 s, por padrão) | um pouco mais devagar |
+| cartaz da revolução | resmungo, exclamação, volume bem mais alto, repete (1 vez, depois de 0,5 s, por padrão) | um pouco mais devagar |
 
-Cada frase leva uns 3 segundos para ser gerada na primeira vez. Depois fica guardada em `memory/voz/<pet>/` e
-toca na hora. Essa pasta pode ser apagada à vontade. Uma frase nova interrompe a anterior. Fechar o
-post-it cala a fala dele, mesmo que ela ainda esteja sendo gerada.
+**Memes e fotos também falam.** Com a voz ligada, quando ele traz um meme ou uma foto, diz alguma coisa ao
+entregar: uma fala de `pets/<pet>/falas_memes.txt` ou, se a IA local que enxerga estiver instalada e a rede
+quiser inventar (`INVENTAR`), um comentário da IA sobre a própria imagem. A IA olha uma cópia: o meme do pet
+fica intacto. Com a voz natural, o meme espera a fala ficar pronta, como os post-its. Sem a voz, o meme continua
+mudo. Para testar sem esperar a vontade dele, use os botões **Testar meme** e **Testar meme com IA**, em
+Configurações, no grupo **Travessuras**: ele traz um meme na hora, e a linha embaixo dos botões diz o que está
+acontecendo. O teste não conta como travessura para a rede aprender.
+
+**A fala é gerada antes de o post-it aparecer.** Com a voz natural, cada post-it e cada cartaz passa por uma
+fila antes de aparecer:
+
+1. o motor da voz abre, carrega o modelo, gera o áudio da frase num arquivo e fecha (a memória volta na hora);
+2. o post-it (ou cartaz) aparece já com o áudio, que toca junto;
+3. quando termina de tocar, o arquivo é apagado.
+
+Nada fica guardado. No macOS com Apple Silicon (M-series), isso leva uns 6 a 9 segundos por fala, quase tudo
+para carregar o modelo; nesse tempo, o post-it ainda não está na tela. Se você pausar ou desligar o pet, ou
+desligar a voz, no meio, o post-it não aparece e o áudio é apagado. Se o cartaz mudar de estágio enquanto a fala
+é gerada, a fala velha é jogada fora e a do cartaz novo é gerada. Uma frase nova interrompe a anterior, e fechar
+o post-it cala a fala dele. Cartaz só com símbolos (como `@#$%!`) aparece na hora, sem fala.
 
 ### Trocar a voz de um pet
 
@@ -173,7 +213,7 @@ com a deles, em `pets/bryan/voz/` e `pets/jorge/voz/`. Para trocar:
 2. Salve como `pets/<pet>/voz/referencia.wav`, no lugar do que está lá.
 3. Escreva em `pets/<pet>/voz/referencia.txt` **exatamente** o que é dito no áudio, palavra por palavra.
    Se o texto não bater com o áudio, a voz sai estranha.
-4. Feche e abra o Pestinha. As falas antigas, que estavam guardadas, deixam de valer sozinhas.
+4. Pronto: a próxima fala já sai com a voz nova (nenhuma fala fica guardada).
 
 Só use a voz de alguém com a permissão dessa pessoa.
 
@@ -197,6 +237,13 @@ Em teste: o pet escreve um post-it novo sobre o que está sentindo, com um model
 seu computador. Quem decide o que ele sente continua sendo a rede neural: a emoção, o cansaço, a carência, o
 tédio e o protesto saem dela. O modelo só põe isso em palavras e nunca decide nada.
 
+**A rede escolhe: frase nova ou já escrita.** Toda vez que ele vai deixar um post-it, o neurônio `INVENTAR`
+decide se a frase é nova (escrita pela IA na hora) ou uma de `recadinhos.txt`. Quanto mais ele dispara, maior a
+chance de ser nova: entediado ou brincalhão, inventa bastante; trabalhando, cansado, triste ou de castigo,
+quase nunca. Com a IA local instalada, isso vem ligado (**Inventar frases novas**, em Configurações > IA local);
+sem ela, ele usa sempre as frases do arquivo. A memória registra as frases inventadas como `bilhete_ia`,
+separado das já escritas (por enquanto só registra; quem decide frase nova ou não continua sendo o `INVENTAR`).
+
 Para instalar, por enquanto pelo terminal (rodando pelo código):
 
 ```bash
@@ -208,15 +255,22 @@ Ele baixa para a pasta `ia_local/`, ao lado do programa:
 - o [llama.cpp](https://github.com/ggml-org/llama.cpp) já pronto, publicado pelo próprio projeto (13 a 25 MB,
   conforme o sistema). Nada é instalado no sistema nem no Python;
 - o modelo [Qwen3.5-2B](https://huggingface.co/Qwen/Qwen3.5-2B) compactado
-  ([GGUF Q4_K_M](https://huggingface.co/unsloth/Qwen3.5-2B-GGUF), 1,3 GB).
+  ([GGUF Q4_K_M](https://huggingface.co/unsloth/Qwen3.5-2B-GGUF), 1,3 GB);
+- a parte do mesmo modelo que enxerga imagens (`mmproj-F16.gguf`, 0,7 GB), usada para **espiar a tela**.
 
-Os dois têm versão fixa e só são usados se a sha256 bater com a anotada no código. No fim, ele gera uma
-resposta de teste.
+Tudo tem versão fixa e só é usado se a sha256 bater com a anotada no código. No fim, ele gera uma
+resposta de teste. Quem já tinha instalado antes da visão roda o mesmo comando de novo: ele baixa só o que falta.
 
-Depois, clique com o botão direito no pet e escolha **Escrever o que está sentindo (IA)**. Cada clique abre o
-llama.cpp, que carrega o modelo, escreve e fecha: o modelo não fica ocupando memória. No macOS com Apple
-Silicon, leva cerca de 1 segundo. Ele entrega a frase como um post-it e, com a voz ligada, lê em voz alta. O
-item só funciona com **Travessuras** e **Bilhetes** ligados.
+Também dá para pedir pelo menu: clique com o botão direito no pet e escolha **Escrever o que está sentindo
+(IA)**. Seja pela rede ou pelo menu, a frase passa pela mesma fila, um modelo por vez:
+
+1. o llama.cpp abre, carrega o modelo, escreve a frase e fecha (no macOS com Apple Silicon, cerca de 1 segundo);
+2. com a voz natural, o motor da voz abre, gera o áudio e fecha (uns 6 a 9 segundos);
+3. o post-it aparece com o áudio, e o áudio é apagado depois de tocar.
+
+A IA e a voz nunca ficam na memória ao mesmo tempo. Enquanto um post-it está sendo preparado, ele não apronta
+outra travessura, e o menu mostra **Preparando...**. Tudo isso só funciona com **Travessuras** e **Bilhetes**
+ligados.
 
 O pedido ao modelo leva só:
 
@@ -229,19 +283,50 @@ O pedido ao modelo leva só:
 Respostas vazias, curtas ou compridas demais, com link ou copiadas de um exemplo são descartadas, e ele tenta
 de novo, até 3 vezes. Para remover: `python -m pestinha.mind.ia_local --remover`, ou apague a pasta `ia_local/`.
 
+### Espiar a tela (em teste)
+
+O Qwen3.5-2B também enxerga imagens. Com **Espiar a tela e comentar** ligado (em Configurações > IA local; vem
+**desligado**), de vez em quando ele tira um print da tela e escreve um post-it comentando o que você está
+fazendo, como "você está programando de novo?".
+
+Quem decide quando é o neurônio `ESPIAR`: ele dispara quando o pet está curioso e há novidade na tela, e
+quase nada quando está cansado, triste ou de castigo. Mesmo com vontade, ele espia no máximo uma vez a cada 10
+minutos (30 segundos no Modo teste). Não espia em tela cheia, dormindo, em greve ou na revolução.
+
+1. O print é tirado do monitor principal e reduzido para 1280 pixels de largura.
+2. O llama.cpp abre com a parte que enxerga, olha o print, escreve o comentário e fecha (cerca de 2 segundos).
+3. **O print é apagado na hora**, antes mesmo de gerar a voz. Nunca é gravado nem enviado para lugar nenhum.
+4. Com a voz natural, a fala é gerada; depois o post-it aparece com o áudio.
+
+O pedido ao modelo diz para não copiar textos, nomes, números, e-mails nem senhas da tela. Mesmo assim, é um
+modelo pequeno: o comentário pode citar algo que está aparecendo. Não ligue se a tela costuma mostrar algo
+sensível.
+
+Para espiar uma vez, sem ligar a opção, clique com o botão direito no pet e escolha **Espiar a tela e comentar
+(IA)**.
+
+**No macOS**, o print precisa da permissão **Gravação de Tela** (Ajustes do Sistema > Privacidade e
+Segurança > Gravação de Tela). Ele pede essa permissão só quando você liga a opção ou clica no item do menu, e
+nunca sozinho. Rodando pelo código, a permissão é do Terminal (ou do programa que abriu o Python). Depois de
+permitir, **feche e abra de novo** o Terminal e o Pestinha: o macOS só vale a permissão ao reabrir. Sem a
+permissão, ele simplesmente não espia. Para conferir se a captura deu certo, ligue o Modo teste e veja o último
+print (acima, em Modo teste).
+
 ## Privacidade
 
 Ele roda só no seu computador e não envia nada para a internet. A única exceção é a instalação da voz
 natural e da IA local, que você pede: elas baixam bibliotecas do PyPI, o llama.cpp do GitHub e os modelos do
 Hugging Face. Lê o **nome** do programa em primeiro
 plano, o tempo sem usar teclado e mouse, a posição do cursor e a geometria das janelas. **Nunca** lê
-conteúdo nem título de janela. Tudo o que ele grava fica na pasta de dados e pode ser apagado pela tela de
+título de janela, e só vê o conteúdo da tela se você ligar **Espiar a tela e comentar** (desligado por
+padrão): aí o print vai só para a IA local, no seu computador, e é apagado logo depois. Tudo o que ele grava fica na pasta de dados e pode ser apagado pela tela de
 configurações: `memory/`, rodando pelo código, ou `%LOCALAPPDATA%\Pestinha`, no executável do Windows.
 Detalhes em [PRIVACIDADE.md](PRIVACIDADE.md).
 
 ## Personalizar
 
-- **Memes, recadinhos e cartazes do Bryan:** pasta `pets/bryan/`, explicada em [pets/README.md](pets/README.md).
+- **Memes, recadinhos, cartazes e o que ele fala dos memes:** pasta `pets/bryan/`, explicada em
+  [pets/README.md](pets/README.md).
   Pode editar com ele aberto.
 - **Bolinhas, notebook e suas fotos:** `assets/comum/`, valem para qualquer personagem
   ([assets/LEIA-ME.txt](assets/LEIA-ME.txt)).
@@ -263,7 +348,7 @@ Detalhes em [PRIVACIDADE.md](PRIVACIDADE.md).
 | `docs/` | Arquitetura, rede neural e relatórios ([docs/README.md](docs/README.md)) |
 | `memory/` | Gerada em uso, com o que ele aprende. Não vai para o repositório |
 | `voz_natural/` | Só se você instalar a voz natural: PyTorch e o modelo OmniVoice. Não vai para o repositório |
-| `ia_local/` | Só se você instalar as frases com IA: llama.cpp e o modelo Qwen3.5-2B. Não vai para o repositório |
+| `ia_local/` | Só se você instalar as frases com IA: llama.cpp e o modelo Qwen3.5-2B (com a parte que enxerga). Não vai para o repositório |
 
 ## Documentação
 
@@ -369,7 +454,7 @@ baixados na instalação. Os dois permitem uso comercial.
 
 - Linux ainda não foi testado numa máquina real: a parte de leitura das janelas e do teclado foi escrita e
   testada só nas partes de texto (ver `tests/test_plataforma.py`). No macOS, `tests/test_macos_real.py` abre
-  janelas de verdade e lê o sistema num Mac real, inclusive no CI.
+  janelas reais e lê o sistema no macOS, inclusive no CI.
 - No macOS, o pet precisa da permissão de Acessibilidade para o atalho Ctrl+Alt+Shift+B funcionar.
 - No Linux com Wayland, o pet não enxerga janelas nem o tempo ocioso, e o atalho global não funciona.
 - Pouco testado com escala de tela acima de 100% e com vários monitores. A tela cheia num monitor esconde o

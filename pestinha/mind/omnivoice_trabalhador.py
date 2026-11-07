@@ -4,7 +4,7 @@ não no do Pestinha: quem o abre é mind/voz_motor.py, com o Python daquele ambi
 
 Conversa por linhas de JSON:
     entrada:  {"id": 1, "texto": "[sigh] ninguém lê o que eu escrevo", "velocidade": 0.85, "seed": 11,
-               "referencia": ".../referencia.wav", "referencia_texto": "...", "saida": ".../abc.wav"}
+               "volume": 0.5, "referencia": ".../referencia.wav", "referencia_texto": "...", "saida": ".../abc.wav"}
     saída:    {"evento": "pronto", "dispositivo": "mps", "segundos": 7.6}     (uma vez, depois de carregar)
               {"id": 1, "ok": true, "segundos": 2.9, "tentativas": 1}
               {"id": 1, "ok": false, "erro": "..."}
@@ -28,7 +28,8 @@ TAXA = 24000                # Hz: o OmniVoice gera áudio mono a 24 kHz
 TENTATIVAS = 5              # seeds tentadas antes de desistir de uma frase
 FALA_MINIMA = 0.5           # fração do áudio que precisa ter voz (menos que isso: mudo ou cortado)
 GUIDANCE = 3.0              # mais firme que o padrão (2.0): bem menos frases mudas na clonagem
-VOLUME = 0.5                # pico do áudio final (o mesmo para todas as frases)
+VOLUME = 0.5                # pico do áudio final (o pedido pode pedir mais: a revolução sai mais alta)
+VOLUME_MAXIMO = 0.95        # acima disso, o áudio estoura
 FOLGA_S = 0.1               # silêncio deixado nas pontas
 
 
@@ -49,8 +50,8 @@ def fracao_de_fala(audio):
     return float((rms > 0.1 * rms.max()).mean())
 
 
-def acabamento(audio):
-    """Corta o silêncio das pontas (deixa uma folga) e deixa todas as frases com o mesmo volume."""
+def acabamento(audio, volume=VOLUME):
+    """Corta o silêncio das pontas (deixa uma folga) e deixa a frase com o pico em `volume`."""
     audio = np.asarray(audio, dtype=np.float32)
     rms = energia(audio)
     if len(rms) == 0 or rms.max() <= 1e-3:
@@ -58,15 +59,16 @@ def acabamento(audio):
     voz = np.where(rms > 0.1 * rms.max())[0]
     folga = int(FOLGA_S * TAXA)
     audio = audio[max(voz[0] - folga, 0): voz[-1] + folga]
-    return (audio / max(float(np.abs(audio).max()), 1e-9) * VOLUME).astype(np.float32)
+    volume = min(max(float(volume), 0.05), VOLUME_MAXIMO)
+    return (audio / max(float(np.abs(audio).max()), 1e-9) * volume).astype(np.float32)
 
 
-def sintetizar_com_tentativas(gerar, texto, seed, tentativas=TENTATIVAS):
+def sintetizar_com_tentativas(gerar, texto, seed, tentativas=TENTATIVAS, volume=VOLUME):
     """Chama `gerar(texto, seed)` até sair fala de verdade. Devolve (áudio, tentativas) ou (None, tentativas)."""
     for n in range(1, tentativas + 1):
         audio = gerar(texto, seed + n - 1)
         if fracao_de_fala(audio) >= FALA_MINIMA:
-            return acabamento(audio), n
+            return acabamento(audio, volume), n
     return None, tentativas
 
 
@@ -145,7 +147,7 @@ def main(argv=None):
         prompt = prompt_de(pedido)
         return sintetizar_com_tentativas(
             lambda t, s: gerar(t, s, voice_clone_prompt=prompt, speed=float(pedido.get("velocidade", 1.0))),
-            pedido["texto"], int(pedido.get("seed", 11)))
+            pedido["texto"], int(pedido.get("seed", 11)), volume=float(pedido.get("volume", VOLUME)))
 
     def salvar(caminho, audio):
         caminho.parent.mkdir(parents=True, exist_ok=True)

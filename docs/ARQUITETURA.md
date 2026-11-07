@@ -45,7 +45,7 @@ Cada camada só importa das que estão à esquerda dela, além dos módulos comp
 | `sense/` | O que as leituras significam e registro da rotina | não | não (usa `plataforma/`) |
 | `body/` | Janela do pet, estado que ele mostra, comportamento, bolinha | sim | não (usa `plataforma/`) |
 | `world/` | Objetos na tela e a janela arrastável base | sim | não |
-| `mind/` | Controladores: ligam as decisões da rede à cena. Também a voz (o motor do OmniVoice roda em outro processo, com o Python de `voz_natural/`) e as frases com IA (o llama.cpp de `ia_local/` escreve o que a rede sente, num processo que abre e fecha a cada frase) | sim | não |
+| `mind/` | Controladores: ligam as decisões da rede à cena. Também a voz e a IA local: `preparo.py` é uma fila (uma thread, uma tarefa por vez) que roda o llama.cpp de `ia_local/` e o motor do OmniVoice (com o Python de `voz_natural/`), cada um num processo que abre, carrega o modelo, faz a sua parte e fecha; `fala_ctl.py` monta as tarefas (escrever, comentar a tela ou o meme, gerar a fala) e mostra o post-it, meme ou cartaz quando ficam prontas | sim | não |
 | `ui/` | Telas: permissões, bandeja, passo a passo, monitor, painel de protesto, instalação da voz natural | sim | não (usa `plataforma/`) |
 | `controle/` | Mixins de `PestinhaApp`: sessão e interação | sim | não |
 | `app.py` | Composição e os três ciclos | sim | sim |

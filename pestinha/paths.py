@@ -128,6 +128,11 @@ class ConteudoPaths:
         return self.resolver("memes")
 
     @property
+    def falas_memes(self):
+        """O que ele fala ao trazer um meme ou foto (com a voz ligada), um por linha."""
+        return self.resolver("falas_memes.txt")
+
+    @property
     def memes_trabalho(self):
         """Memes de quando você programa e ele não está sentado no notebook."""
         return self.resolver("memes/trabalhando")
@@ -267,6 +272,11 @@ class Paths:
         """O que o motor da voz natural escreve (avisos do PyTorch, erros do modelo)."""
         return self.memory / "logs" / "voz_natural.log"
 
+    @property
+    def ultima_espiada(self):
+        """Só no Modo teste: cópia do último print que a IA olhou, para conferir a captura (substituída a cada vez)."""
+        return self.memory / "logs" / "ultima_espiada.png"
+
     # ----- estado de cada personagem -----
 
     @property
@@ -280,7 +290,7 @@ class Paths:
         return self.memory / "legado"
 
     def voz(self, pet_id):
-        """Cache das falas que a voz natural gerou para o `pet_id` (memory/voz/<pet_id>/). Pode apagar à vontade."""
+        """O áudio da fala da vez do `pet_id` (memory/voz/<pet_id>/): apagado depois de tocar. Pode apagar à vontade."""
         if not pet_id_valido(pet_id):
             raise ValueError(f"id de pet inválido: {pet_id!r}")
         return self.memory / "voz" / pet_id

@@ -7,7 +7,9 @@ Os retângulos saem em pixels físicos (pontos x escala).
 
 import os
 import re
+import subprocess
 import threading
+from pathlib import Path
 
 from ._comum import iniciar, rodar
 from PySide6.QtWidgets import QApplication
@@ -24,6 +26,7 @@ OPCOES_NA_TELA = (1 << 0) | (1 << 4)        # OnScreenOnly | ExcludeDesktopEleme
 JANELA_NULA = 0
 PAINEL_SEM_ATIVAR = 1 << 7                  # NSWindowStyleMaskNonactivatingPanel
 EM_TODOS_OS_ESPACOS = (1 << 0) | (1 << 4) | (1 << 8)    # CanJoinAllSpaces | Stationary | FullScreenAuxiliary
+NIVEL_NORMAL = 0                            # NSNormalWindowLevel: outros programas podem ficar por cima
 _hotkey = None
 
 def _quartz():
@@ -154,8 +157,15 @@ def manter_na_frente(janela):
     janela.setCollectionBehavior_(EM_TODOS_OS_ESPACOS)
 
 
-def sem_foco_nativo(janela_id):
-    """A janela fica na frente de tudo, em todos os Spaces, e clicar nela não ativa o programa."""
+def deixar_normal(janela):
+    """Painel no nível normal: outros programas ficam por cima quando você usa eles, mas ele não some."""
+    janela.setHidesOnDeactivate_(False)
+    janela.setStyleMask_(janela.styleMask() | PAINEL_SEM_ATIVAR)    # clicar nele não rouba o foco
+    janela.setLevel_(NIVEL_NORMAL)
+
+
+def _ajustar(janela_id, ajuste):
+    """Aplica `ajuste` no NSWindow dono do id, só quando o id é mesmo um NSView (Qt no Cocoa)."""
     app = QApplication.instance()
     if app is None or app.platformName() != "cocoa":
         # Sem janela nativa (ex.: teste offscreen) o id não é um NSView e usá-lo derrubaria o processo.
@@ -163,9 +173,24 @@ def sem_foco_nativo(janela_id):
         return
     try:
         import objc
-        manter_na_frente(objc.objc_object(c_void_p=janela_id).window())
+        ajuste(objc.objc_object(c_void_p=janela_id).window())
     except Exception:
-        pass        # sem pyobjc: o pet funciona, mas volta a sumir ao trocar de programa
+        pass        # sem pyobjc: a janela funciona, só sem o ajuste
+
+
+def sem_foco_nativo(janela_id):
+    """A janela fica na frente de tudo, em todos os Spaces, e clicar nela não ativa o programa."""
+    _ajustar(janela_id, manter_na_frente)
+
+
+def janela_normal(janela_id):
+    """A janela (painel) fica no nível normal, não some ao trocar de programa e não rouba o foco."""
+    _ajustar(janela_id, deixar_normal)
+
+
+def trazer_para_frente(janela_id):
+    """Põe a janela na frente das outras, mesmo com o programa sem foco (abrir um painel pelo menu)."""
+    _ajustar(janela_id, lambda janela: janela.orderFrontRegardless())
 
 
 # ---------------- voz ----------------
@@ -208,6 +233,37 @@ def falar(texto, voz=None):
 def tocar_audio(caminho):
     """Toca um arquivo de áudio (WAV) com o `afplay`, sem esperar. Devolve o processo, ou None."""
     return iniciar(["afplay", str(caminho)])
+
+
+# ---------------- print da tela (para o pet comentar) ----------------
+
+def capturar_tela(destino):
+    """Print do monitor principal com o `screencapture`, sem som. Roda em qualquer thread. True se salvou."""
+    try:
+        r = subprocess.run(["screencapture", "-x", "-m", "-t", "png", str(destino)], stdin=subprocess.DEVNULL,
+                           capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    caminho = Path(destino)
+    return r.returncode == 0 and caminho.exists() and caminho.stat().st_size > 0
+
+
+def permissao_tela():
+    """Já tem a permissão de Gravação de Tela? Só confere: não abre a pergunta do macOS."""
+    try:
+        import Quartz
+        return bool(Quartz.CGPreflightScreenCaptureAccess())
+    except Exception:
+        return False
+
+
+def pedir_permissao_tela():
+    """Abre a pergunta do macOS (só quando a pessoa clica no menu). True se já tinha a permissão."""
+    try:
+        import Quartz
+        return bool(Quartz.CGRequestScreenCaptureAccess())
+    except Exception:
+        return False
 
 
 def iniciar_atalho(callback):

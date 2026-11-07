@@ -14,6 +14,16 @@ def rodar(comando, tempo=1.0):
     return resultado.stdout if resultado.returncode == 0 else None
 
 
+def capturar_tela_qt(destino):
+    """Print do monitor principal pelo Qt (Windows e Linux com X11). Só na thread da tela. True se salvou."""
+    from PySide6.QtGui import QGuiApplication
+    tela = QGuiApplication.primaryScreen()
+    if tela is None:
+        return False
+    imagem = tela.grabWindow(0).toImage()
+    return not imagem.isNull() and imagem.save(str(destino), "PNG")
+
+
 def iniciar(comando, entrada=None):
     """Começa o comando sem esperar e devolve o processo (para poder parar), ou None se não deu."""
     try:

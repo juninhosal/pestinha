@@ -31,7 +31,8 @@ Pode editar com ele aberto: ele relê os textos e procura imagens novas sozinho.
 | `memes/trabalhando/` | Memes de quando você programa e ele não está sentado no notebook. |
 | `recadinhos.txt` | Uma frase por linha, sorteada para os post-its. `#` é comentário. |
 | `recadinhos_tristes.txt` | Bilhetes que ele cola quando está triste. |
-| `cartazes.txt` | Cartazes por seção: `[reclamacao]`, `[manifestacao]`, `[greve]`, `[revolucao]`, `[acordo]`, `[desistiu]`, `[saudade]`, `[chorando]`, `[abandonado]`, `[volto]`, e no cantinho do castigo `[castigo]` e `[xingamento]`. |
+| `falas_memes.txt` | Opcional. O que ele fala ao trazer um meme ou foto, com a voz ligada (uma fala por linha, `#` é comentário). Sem o arquivo, ele usa reações neutras. Com a IA local que enxerga, a rede às vezes prefere que a IA olhe a imagem e comente. |
+| `cartazes.txt` | Cartazes por seção: `[reclamacao]`, `[manifestacao]`, `[greve]`, `[revolucao]`, `[acordo]`, `[desistiu]`, `[saudade]`, `[chorando]`, `[abandonado]`, `[volto]`, e no cantinho do castigo `[castigo]` e `[xingamento]`. `[resmungo]` não vira placa: é o que ele fala, com a voz ligada, quando o xingamento é só símbolos. |
 | `bolinha_tenis.png`, `bolinha_papel.png`, `notebook.png` | Opcionais: se existirem aqui, valem no lugar dos de `assets/comum/`. |
 | `voz/referencia.wav` | A voz dele na voz natural: 3 a 10 segundos de uma pessoa só falando português. O modelo imita esse áudio em todas as frases. Para trocar a voz, troque este arquivo. |
 | `voz/referencia.txt` | O que é dito no `referencia.wav`, palavra por palavra. Sem os dois arquivos, ele usa a voz do sistema. |

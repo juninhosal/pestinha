@@ -17,7 +17,8 @@ esses sites, como em qualquer download). Depois de instalados, os modelos rodam 
 - Se uma janela cobre a tela inteira (para não aparecer em jogos ou apresentações).
 - A posição e o tamanho das janelas abertas, para ele poder pousar nas barras de título.
 
-Ele **não** lê o conteúdo nem o título de nenhuma janela, página, documento ou conversa.
+Ele **não** lê o título de nenhuma janela, página, documento ou conversa. O conteúdo da tela, só com
+**Espiar a tela e comentar** (veja abaixo), que vem desligado.
 
 ## O que ele grava
 
@@ -34,7 +35,7 @@ Do app e seu, direto em `memory/`:
 | `panels.json` | Posição dos painéis, do notebook e da placa |
 | `logs/pestinha.log` | Mensagens do programa e erros inesperados (sem conteúdo de janelas) |
 | `logs/voz_natural.log` | Só com a voz natural: avisos e erros do modelo |
-| `voz/<pet>/` | Só com a voz natural: as falas já geradas (um `.wav` por frase e emoção), para tocar na hora da próxima vez. O nome do arquivo é um código; o texto não fica gravado à parte |
+| `voz/<pet>/` | Só com a voz natural: o áudio da fala que vai tocar agora. Ele é gerado antes de o post-it aparecer e apagado assim que termina de tocar (ou se o post-it não aparecer). Nada fica guardado; sobras de quando o programa fechou no meio são apagadas ao abrir |
 
 De cada personagem, em `memory/pets/<pet>/` (um personagem não lê a memória do outro):
 
@@ -71,6 +72,15 @@ os arquivos antigos e avisa no ícone da bandeja.
   (uns 1,3 GB). Não tem nenhum dado seu. O pedido ao modelo leva o que o pet sente, a categoria do programa
   em primeiro plano (programando, jogando...; nunca o nome nem o título da janela), a parte do dia e frases
   do pet. Fica no seu computador e não é gravado; o log anota só quanto tempo levou (a frase, só no Modo teste).
+- **Espiar a tela e comentar** (desligado por padrão, em teste): de vez em quando, ele tira um print do monitor
+  principal, reduz e entrega à IA local, no seu computador, que escreve um comentário. O print fica num arquivo
+  temporário, que só o seu usuário lê, e é **apagado logo depois que o modelo olha**, dê certo ou não. Nunca é
+  gravado na pasta de dados nem enviado para lugar nenhum. O pedido ao modelo diz para não copiar textos, nomes,
+  números, e-mails nem senhas da tela, mas o comentário pode citar algo que aparece nela. No macOS, precisa da
+  permissão de Gravação de Tela, que ele só pede quando você liga a opção ou clica em **Espiar a tela e
+  comentar (IA)** no menu. **Exceção, só no Modo teste:** uma cópia do último print que a IA olhou fica em
+  `logs/ultima_espiada.png`, na pasta de dados, para você conferir a captura. Ela é substituída a cada espiada
+  e apagada quando o Modo teste é desligado (e por **Apagar todos os dados**).
 
 - **Abrir ao entrar no Windows** (desligado por padrão) grava uma entrada em
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, só para o seu usuário.

@@ -1,9 +1,9 @@
 """
-IA local (em teste): instalação do llama.cpp e do modelo, o pedido que sai do estado da rede, a limpeza
-da resposta, a geração em outro processo e o post-it que ele entrega.
+IA local (em teste): instalação do llama.cpp, do modelo e da visão, o pedido que sai do estado da rede,
+a limpeza da resposta, escrever e comentar a tela, e o post-it que ele entrega.
 
 Nada aqui baixa nem roda o modelo de verdade: o "llama.cpp" é um script Python que responde o que o
-teste manda. O teste com o modelo real é o passo [3/3] do instalador.
+teste manda. O teste com o modelo real é o passo [4/4] do instalador.
 """
 import io
 import json
@@ -51,14 +51,25 @@ def resposta_qwen(texto):
     return f"<think>\n\n</think>\n\n{texto} [end of text]\n"
 
 
-def _instalada_falsa(pasta):
-    """Uma ia_local/ com tudo no lugar (programa e modelo vazios)."""
-    exe = pasta / "llama" / "llama-b1" / ia_local.PROGRAMA
-    exe.parent.mkdir(parents=True)
-    exe.write_text("")
+def _instalada_falsa(pasta, visao=True):
+    """Uma ia_local/ com tudo no lugar (programas e modelo vazios); `visao` põe a parte que enxerga."""
+    for nome in (ia_local.PROGRAMA, ia_local.PROGRAMA_VISAO):
+        exe = pasta / "llama" / "llama-b1" / nome
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        exe.write_text("")
     ia_local.modelo(pasta).parent.mkdir(parents=True)
     ia_local.modelo(pasta).write_text("")
+    if visao:
+        ia_local.visao(pasta).write_text("")
     (pasta / "instalado.json").write_text("{}")
+
+
+def _usar_llama_falso(monkeypatch, prog):
+    """Os comandos de texto e de visão passam a abrir o llama falso (funciona em qualquer sistema)."""
+    texto, visao = ia_local.comando, ia_local.comando_visao
+    monkeypatch.setattr(ia_local, "comando", lambda pasta, prompt, **kw: texto(pasta, prompt, programa_=prog, **kw))
+    monkeypatch.setattr(ia_local, "comando_visao",
+                        lambda pasta, *a, **kw: visao(pasta, *a, programa_=prog, **kw))
 
 
 # ---------------- onde estão as coisas ----------------
@@ -86,6 +97,9 @@ def test_versoes_fixas_e_conferidas():
     assert all(ia_local.LLAMA_VERSAO in arq and len(sha) == 64 for arq, sha in ia_local.PACOTES.values())
     assert ia_local.MODELO_REVISAO in ia_local.MODELO_URL and ia_local.MODELO_ARQUIVO in ia_local.MODELO_URL
     assert len(ia_local.MODELO_SHA256) == 64 and ia_local.MODELO_BYTES > 10 ** 9
+    # a visão vem do mesmo repositório, na mesma revisão do modelo
+    assert ia_local.MODELO_REVISAO in ia_local.VISAO_URL and ia_local.VISAO_ARQUIVO in ia_local.VISAO_URL
+    assert len(ia_local.VISAO_SHA256) == 64 and ia_local.VISAO_BYTES > 10 ** 8
 
 
 def test_acha_o_programa_onde_o_pacote_puser(tmp_path):
@@ -99,7 +113,9 @@ def test_acha_o_programa_onde_o_pacote_puser(tmp_path):
 def test_instalada_precisa_de_tudo(tmp_path):
     assert not ia_local.instalada(tmp_path)
     _instalada_falsa(tmp_path)
-    assert ia_local.instalada(tmp_path)
+    assert ia_local.instalada(tmp_path) and ia_local.visao_instalada(tmp_path)
+    ia_local.visao(tmp_path).unlink()                      # instalada antes da visão existir
+    assert ia_local.instalada(tmp_path) and not ia_local.visao_instalada(tmp_path)
     (tmp_path / "instalado.json").unlink()                 # o instalador não terminou
     assert not ia_local.instalada(tmp_path)
 
@@ -125,6 +141,23 @@ def test_comando_carrega_o_modelo_gera_e_sai_sem_internet(tmp_path):
     assert cmd[cmd.index("-m") + 1] == str(ia_local.modelo(tmp_path)) and cmd[cmd.index("-p") + 1] == "PROMPT"
     assert "-no-cnv" in cmd and "--offline" in cmd and "--no-display-prompt" in cmd
     assert cmd[cmd.index("-n") + 1] == "12" and cmd[cmd.index("-s") + 1] == "7"
+
+
+def test_comando_de_visao_le_a_imagem_sem_pensar_e_sem_internet(tmp_path):
+    _instalada_falsa(tmp_path)
+    cmd = ia_local.comando_visao(tmp_path, "SISTEMA", "PEDIDO", tmp_path / "tela.png", tokens=12, seed=7)
+    assert cmd[0] == str(ia_local.programa(tmp_path, ia_local.PROGRAMA_VISAO))
+    valor = lambda opcao: cmd[cmd.index(opcao) + 1]         # noqa: E731
+    assert valor("--mmproj") == str(ia_local.visao(tmp_path)) and valor("--image") == str(tmp_path / "tela.png")
+    assert valor("-sys") == "SISTEMA" and valor("-p") == "PEDIDO" and valor("-n") == "12"
+    assert valor("--image-max-tokens") == str(ia_local.IMAGEM_TOKENS) and "--offline" in cmd
+    assert "--jinja" in cmd and "<think>\n\n</think>" in valor("--chat-template")   # pensamento vazio
+
+
+def test_ver_com_o_llama_falso(tmp_path):
+    prog, chamadas = llama_falso(tmp_path, [resposta_qwen("você está programando de novo?")])
+    texto = ia_local.ver(tmp_path, "s", "p", tmp_path / "tela.png", programa_=prog)
+    assert texto == "você está programando de novo?" and "--image" in chamadas.read_text(encoding="utf-8")
 
 
 def test_resposta_sem_as_marcas():
@@ -190,16 +223,16 @@ def test_extrair_recusa_arquivo_que_sai_da_pasta(tmp_path):
 
 def _baixar_falso(tmp_path, chamadas, falhar=()):
     pacote = tmp_path / "pacote_original.tar.gz"
-    _tar_com(pacote, [f"llama-b1/{ia_local.PROGRAMA}"])
+    _tar_com(pacote, [f"llama-b1/{ia_local.PROGRAMA}", f"llama-b1/{ia_local.PROGRAMA_VISAO}"])
 
     def baixar(url, destino, sha, escrever, total=None):
         chamadas.append(url)
         if any(f in url for f in falhar):
             raise RuntimeError("a internet caiu")
         destino.parent.mkdir(parents=True, exist_ok=True)
-        if url == ia_local.MODELO_URL:
-            with open(destino, "wb") as f:
-                f.truncate(ia_local.MODELO_BYTES)              # do tamanho certo, sem ocupar o disco
+        if url in (ia_local.MODELO_URL, ia_local.VISAO_URL):
+            with open(destino, "wb") as f:                     # do tamanho certo, sem ocupar o disco
+                f.truncate(ia_local.MODELO_BYTES if url == ia_local.MODELO_URL else ia_local.VISAO_BYTES)
         else:
             destino.write_bytes(pacote.read_bytes())
         return destino
@@ -210,12 +243,14 @@ def test_instalar_baixa_confere_testa_e_marca(tmp_path):
     pasta, chamadas, linhas = tmp_path / "ia_local", [], []
     ok = ia_local.instalar(pasta, linhas.append, baixar_=_baixar_falso(tmp_path, chamadas),
                            teste_=lambda p: (True, 0.8, "Oi."), sistema="darwin", maquina="arm64")
-    assert ok and ia_local.instalada(pasta)
+    assert ok and ia_local.instalada(pasta) and ia_local.visao_instalada(pasta)
     assert any("macos-arm64" in u and ia_local.LLAMA_VERSAO in u for u in chamadas)
-    assert ia_local.MODELO_URL in chamadas
+    assert ia_local.MODELO_URL in chamadas and ia_local.VISAO_URL in chamadas
+    assert any(linha.startswith("[3/4] Visão") for linha in linhas)
     assert not (pasta / "downloads").exists() or not any((pasta / "downloads").iterdir())   # pacote apagado
     info = json.loads((pasta / "instalado.json").read_text())
     assert info["llama"] == ia_local.LLAMA_VERSAO and info["revisao"] == ia_local.MODELO_REVISAO
+    assert info["visao"] == ia_local.VISAO_ARQUIVO
     de_novo = []
     assert ia_local.instalar(pasta, linhas.append, baixar_=_baixar_falso(tmp_path, de_novo),
                              teste_=lambda p: (True, 0.8, "Oi."), sistema="darwin", maquina="arm64")
@@ -283,6 +318,9 @@ def test_montar_o_pedido():
     ("palavra " * 30, None),
     ("", None),
     ("👀 🔥 💸", None),
+    ("sinto muito, mas não sei se vou funcionar sem você. 😿", "sinto muito, mas não sei se vou funcionar sem você."),
+    ("👍🏽 bom trabalho, chefe!", "bom trabalho, chefe!"),             # o modelo às vezes põe emoji
+    ("olha isso ❤️ que lindo", "olha isso que lindo"),
 ])
 def test_limpar_a_resposta(bruto, limpo):
     assert frases_ia.limpar(bruto) == limpo
@@ -301,7 +339,81 @@ def test_pets_tem_personalidade_e_ela_e_validada():
     assert len(config._pet_valido({"personalidade": "x" * 5000})["personalidade"]) == 600
 
 
-# ---------------- gerar em outro processo (Qt) ----------------
+# ---------------- escrever e comentar (rodam na fila do preparo) ----------------
+
+def _gerar_falso(respostas, erro=None):
+    """Um ia_local.gerar/ver falso: devolve as respostas em ordem e anota as sementes."""
+    chamadas = []
+
+    def gerar(*a, **kw):
+        chamadas.append(kw)
+        if erro:
+            raise RuntimeError(erro)
+        return respostas[min(len(chamadas) - 1, len(respostas) - 1)]
+    return gerar, chamadas
+
+
+def test_escrever_devolve_a_frase_limpa(tmp_path):
+    gerar, chamadas = _gerar_falso(['"eu só queria um amigo"'])
+    assert frases_ia.escrever(tmp_path, "s", "p", gerar_=gerar) == ("eu só queria um amigo", None)
+    assert chamadas[0]["tokens"] == frases_ia.TOKENS
+
+
+def test_escrever_tenta_de_novo_com_outra_semente(tmp_path):
+    gerar, chamadas = _gerar_falso(["OK.", "frase do exemplo aqui", "agora sim uma frase nova"])
+    assert frases_ia.escrever(tmp_path, "s", "p", evitar=["frase do exemplo aqui"], gerar_=gerar) == (
+        "agora sim uma frase nova", None)
+    assert len({c["seed"] for c in chamadas}) == 3
+
+
+def test_escrever_desiste_depois_das_tentativas(tmp_path):
+    gerar, chamadas = _gerar_falso(["OK."])
+    frase, motivo = frases_ia.escrever(tmp_path, "s", "p", gerar_=gerar)
+    assert frase is None and "nenhuma das 3" in motivo and len(chamadas) == frases_ia.TENTATIVAS
+
+
+def test_llama_que_quebra_nao_tenta_de_novo(tmp_path):
+    gerar, chamadas = _gerar_falso([], erro="o llama.cpp saiu com o código 2")
+    assert frases_ia.escrever(tmp_path, "s", "p", gerar_=gerar) == (None, "o llama.cpp saiu com o código 2")
+    assert len(chamadas) == 1
+
+
+def test_escrever_com_o_llama_falso_de_verdade(tmp_path, monkeypatch):
+    prog, chamadas = llama_falso(tmp_path, [resposta_qwen("tô com saudade de você")])
+    _usar_llama_falso(monkeypatch, prog)
+    assert frases_ia.escrever(tmp_path, "s", "p", gerar_=ia_local.gerar) == ("tô com saudade de você", None)
+    assert "<|im_start|>system" in chamadas.read_text(encoding="utf-8")
+
+
+def test_comentar_apaga_o_print_sempre(tmp_path):
+    print_ = tmp_path / "tela.png"
+    print_.write_bytes(b"png")
+    ver, chamadas = _gerar_falso(["você está programando de novo?"])
+    assert frases_ia.comentar(tmp_path, "s", "p", print_, ver_=ver) == ("você está programando de novo?", None)
+    assert not print_.exists() and chamadas[0]["tokens"] == frases_ia.TOKENS
+    print_.write_bytes(b"png")
+    ver, _ = _gerar_falso([], erro="passou de 60 s")
+    assert frases_ia.comentar(tmp_path, "s", "p", print_, ver_=ver) == (None, "passou de 60 s")
+    assert not print_.exists()
+
+
+def test_comentar_nao_aceita_repetir_o_pedido(tmp_path):
+    ver, _ = _gerar_falso(["Espie a tela acima e escreva o post-it.", "que tela bagunçada, hein"])
+    _sistema, pedido = frases_ia.montar_visao("Bryan", None, {"emocao": "curioso"})
+    assert frases_ia.comentar(tmp_path, "s", pedido, tmp_path / "x.png", ver_=ver)[0] == "que tela bagunçada, hein"
+
+
+def test_montar_o_pedido_da_visao_protege_o_que_esta_na_tela():
+    sistema, pedido = frases_ia.montar_visao("Bryan", "Você é teste.", {"emocao": "curioso", "atividade": "PROGRAMMING"})
+    assert "Bryan" in sistema and "Você é teste." in sistema and "senhas" in sistema and "Não copie" in sistema
+    assert "curioso" in pedido and pedido.endswith("Espie a tela acima e escreva o post-it.")
+
+
+def test_frase_que_termina_em_dois_pontos_nao_serve():
+    assert frases_ia.limpar("olha o que você está fazendo:") is None
+
+
+# ---------------- no pet ----------------
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -319,71 +431,6 @@ def _esperar(qapp, cond, tempo=15.0):
     return cond()
 
 
-def test_frase_fica_pronta(qapp, tmp_path):
-    prog, chamadas = llama_falso(tmp_path, [resposta_qwen('"eu só queria um amigo"')])
-    ia = frases_ia.FrasesIA(tmp_path, programa=prog)
-    prontas = []
-    ia.pronta.connect(lambda t, s: prontas.append((t, s)))
-    assert ia.pedir("sistema", "pedido")
-    assert ia.ocupada() and not ia.pedir("outro", "pedido")          # uma por vez
-    assert _esperar(qapp, lambda: prontas)
-    assert prontas[0][0] == "eu só queria um amigo" and not ia.ocupada()
-    assert "<|im_start|>system" in chamadas.read_text(encoding="utf-8")
-
-
-def test_resposta_ruim_tenta_de_novo(qapp, tmp_path):
-    prog, chamadas = llama_falso(tmp_path, [resposta_qwen("OK."), resposta_qwen("frase do exemplo aqui"),
-                                            resposta_qwen("agora sim uma frase nova")])
-    ia = frases_ia.FrasesIA(tmp_path, programa=prog)
-    prontas = []
-    ia.pronta.connect(lambda t, s: prontas.append(t))
-    ia.pedir("s", "p", evitar=["frase do exemplo aqui"])
-    assert _esperar(qapp, lambda: prontas)
-    assert prontas == ["agora sim uma frase nova"] and len(chamadas.read_text(encoding="utf-8").splitlines()) == 3
-    seeds = {linha.split(" -s ")[1].split()[0] for linha in chamadas.read_text(encoding="utf-8").splitlines()}
-    assert len(seeds) == 3                                   # cada tentativa com outra semente
-
-
-def test_desiste_depois_das_tentativas(qapp, tmp_path):
-    prog, chamadas = llama_falso(tmp_path, [resposta_qwen("OK.")])
-    ia = frases_ia.FrasesIA(tmp_path, programa=prog)
-    falhas = []
-    ia.falhou.connect(falhas.append)
-    ia.pedir("s", "p")
-    assert _esperar(qapp, lambda: falhas)
-    assert "nenhuma das 3" in falhas[0] and len(chamadas.read_text(encoding="utf-8").splitlines()) == frases_ia.TENTATIVAS
-
-
-def test_llama_que_quebra_avisa(qapp, tmp_path):
-    prog, _ = llama_falso(tmp_path, ["deu ruim"], codigo=2)
-    ia = frases_ia.FrasesIA(tmp_path, programa=prog)
-    falhas = []
-    ia.falhou.connect(falhas.append)
-    ia.pedir("s", "p")
-    assert _esperar(qapp, lambda: falhas)
-    assert "código 2" in falhas[0]
-
-
-def test_sem_ia_instalada_nao_pede(tmp_path):
-    ia = frases_ia.FrasesIA(tmp_path / "nada")
-    assert not ia.instalada() and not ia.pedir("s", "p") and not ia.ocupada()
-
-
-def test_cancelar_no_meio(qapp, tmp_path):
-    lento = tmp_path / "lento.py"
-    lento.write_text("import time; time.sleep(30)", encoding="utf-8")
-    ia = frases_ia.FrasesIA(tmp_path, programa=[sys.executable, str(lento)])
-    prontas, falhas = [], []
-    ia.pronta.connect(lambda t, s: prontas.append(t))
-    ia.falhou.connect(falhas.append)
-    ia.pedir("s", "p")
-    ia.cancelar()
-    qapp.processEvents()
-    assert not ia.ocupada() and prontas == [] and falhas == []
-
-
-# ---------------- no pet ----------------
-
 @pytest.fixture
 def pet_app(qapp, tmp_path):
     from pestinha.app import PestinhaApp
@@ -395,7 +442,7 @@ def pet_app(qapp, tmp_path):
     store.update(dict(config.DEFAULT_PERMISSIONS, travessuras=True))
     app = PestinhaApp(store, paths)
     yield app
-    app.frases_ia.cancelar()
+    app.preparo.cancelar()
     app.floats.hidden_by_tray = True
     for w in list(app.floats.windows.values()):
         w.close()
@@ -409,7 +456,7 @@ def test_estado_para_a_ia_vem_da_rede_e_nao_tem_janela(pet_app):
     assert estado["atividade"] in ("IDLE", "AWAY", "PROGRAMMING", "DESIGNING", "GAMING", "BROWSING", "MUSIC", "SOCIAL")
 
 
-def test_botao_no_menu(pet_app, monkeypatch):
+def _menu(pet_app, monkeypatch):
     from PySide6.QtWidgets import QMenu
     vistos = []
 
@@ -419,19 +466,41 @@ def test_botao_no_menu(pet_app, monkeypatch):
 
     monkeypatch.setattr("pestinha.controle.interacao.QMenu", MenuAnotado)
     pet_app.show_pet_menu(None)
-    assert vistos[-1]["Escrever o que está sentindo (IA não instalada)"] is False
-    pet_app.frases_ia.programa = ["python"]                      # finge instalada
-    pet_app.show_pet_menu(None)
-    assert vistos[-1]["Escrever o que está sentindo (IA)"] is True
+    return vistos[-1]
+
+
+def test_botoes_no_menu(pet_app, monkeypatch, tmp_path):
+    itens = _menu(pet_app, monkeypatch)
+    assert itens["Escrever o que está sentindo (IA não instalada)"] is False
+    assert "Espiar a tela e comentar (IA)" not in itens
+    _instalada_falsa(pet_app.paths.ia_local, visao=False)
+    itens = _menu(pet_app, monkeypatch)
+    assert itens["Escrever o que está sentindo (IA)"] is True and "Espiar a tela e comentar (IA)" not in itens
+    ia_local.visao(pet_app.paths.ia_local).write_text("")
+    itens = _menu(pet_app, monkeypatch)
+    assert itens["Espiar a tela e comentar (IA)"] is True
     pet_app.perms["bilhetes"] = False
-    pet_app.show_pet_menu(None)
-    assert vistos[-1]["Escrever o que está sentindo (IA)"] is False
+    itens = _menu(pet_app, monkeypatch)
+    assert itens["Escrever o que está sentindo (IA)"] is False and itens["Espiar a tela e comentar (IA)"] is False
 
 
-def test_botao_gera_e_ele_entrega_o_post_it(pet_app, qapp, tmp_path):
+def test_menu_mostra_o_que_esta_sendo_preparado(pet_app, monkeypatch):
+    import threading
+    from pestinha.mind.preparo import Tarefa
+    _instalada_falsa(pet_app.paths.ia_local)
+    solta = threading.Event()
+    pet_app.preparo.pedir(Tarefa("post-it (bilhete_ia)", lambda c: solta.wait(5), lambda r: None))
+    try:
+        assert _menu(pet_app, monkeypatch)["Preparando: post-it (bilhete_ia)..."] is False
+    finally:
+        solta.set()
+
+
+def test_botao_gera_e_ele_entrega_o_post_it(pet_app, qapp, tmp_path, monkeypatch):
     from pestinha.world.objetos import NoteThing
     prog, chamadas = llama_falso(tmp_path, [resposta_qwen("tô com saudade de você")])
-    pet_app.frases_ia.programa = prog
+    _usar_llama_falso(monkeypatch, prog)
+    _instalada_falsa(pet_app.paths.ia_local)
     pet_app.pet.show()
     lidos = []
     pet_app.mischief.bilhete_novo.connect(lidos.append)          # o que a voz leria
@@ -443,8 +512,23 @@ def test_botao_gera_e_ele_entrega_o_post_it(pet_app, qapp, tmp_path):
     assert "triste" in chamadas.read_text(encoding="utf-8")
 
 
-def test_post_it_nao_aparece_se_desligaram_no_meio(pet_app):
+def test_post_it_nao_aparece_se_desligaram_no_meio(pet_app, qapp, tmp_path, monkeypatch):
+    prog, _ = llama_falso(tmp_path, [resposta_qwen("frase que chegou tarde")])
+    _usar_llama_falso(monkeypatch, prog)
+    _instalada_falsa(pet_app.paths.ia_local)
     pet_app.pet.show()
+    pet_app.menu_frase_ia()
     pet_app.perms["bilhetes"] = False
-    pet_app._frase_ia_pronta("frase que chegou tarde", 1.0)
+    assert _esperar(qapp, lambda: not pet_app.preparo.ocupado())
     assert pet_app.mischief.things == []
+
+
+def test_falha_avisa_na_bandeja(pet_app, qapp, tmp_path, monkeypatch):
+    prog, _ = llama_falso(tmp_path, ["deu ruim"], codigo=2)
+    _usar_llama_falso(monkeypatch, prog)
+    _instalada_falsa(pet_app.paths.ia_local)
+    avisos = []
+    monkeypatch.setattr(pet_app.tray.icon, "showMessage", lambda *a: avisos.append(a[1]))
+    pet_app.menu_frase_ia()
+    assert _esperar(qapp, lambda: avisos)
+    assert "código 2" in avisos[0] and pet_app.mischief.things == []
