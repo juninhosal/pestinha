@@ -1,5 +1,12 @@
 # Histórico de versões
 
+## Sem enxurrada de avisos do perfil de cor no terminal
+
+- Com um monitor cujo perfil de cor não tem nome (o macOS gera alguns assim), o Qt escrevia
+  `qt.gui.icc: fromIccProfile: Failed to parse description` a cada redesenho de uma janela nesse monitor,
+  e o terminal enchia enquanto o pet estava lá. As cores sempre ficaram certas: o aviso agora fica desligado.
+  Para ver de novo, rode com `QT_LOGGING_RULES=qt.gui.icc.warning=true`.
+
 ## Fala preparada antes, frases escolhidas pela rede e espiar a tela (em teste)
 
 - **A fala é gerada antes de o post-it ou cartaz aparecer.** Com a voz natural, uma fila prepara tudo antes:
